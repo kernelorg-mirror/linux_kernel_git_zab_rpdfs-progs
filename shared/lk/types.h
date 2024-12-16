@@ -12,5 +12,9 @@ typedef __u32 u32;
 typedef __s32 s32;
 typedef __u64 u64;
 typedef __s64 s64;
+typedef __u128 u128;
+typedef __s128 s128;
+
+typedef unsigned short umode_t;
 
 #endif

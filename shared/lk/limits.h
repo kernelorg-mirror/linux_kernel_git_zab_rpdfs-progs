@@ -2,6 +2,8 @@
 #ifndef NGNFS_SHARED_LK_LIMITS_H
 #define NGNFS_SHARED_LK_LIMITS_H
 
+#include <limits.h>
+
 #include "shared/lk/types.h"
 
 #define U8_MAX		((u8)~0U)

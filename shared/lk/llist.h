@@ -31,10 +31,6 @@ static inline void init_llist_head(struct llist_head *list)
 	__cds_wfs_init(&list->wfstack);
 }
 
-/*
- * XXX this doesn't exist upstream.  llist_add() doesn't have an
- * assertion that the node was initialized, but cds_wfs_push does.
- */
 static inline void init_llist_node(struct llist_node *node)
 {
 	cds_wfs_node_init(&node->wfnode);
@@ -109,9 +105,9 @@ static inline struct llist_node *llist_del_all(struct llist_head *head)
 })
 
 #define llist_for_each_entry(pos, node, member)							\
-        for (pos = _llist_for_each_first(pos, node, member);					\
+        for (pos = _llist_for_each_entry_first(pos, node, member);				\
 	     pos != NULL;									\
-             pos = _llist_for_each_next(pos, member))						\
+             pos = _llist_for_each_entry_next(pos, member))					\
 
 #define _llist_for_each_first(pos, llnode)							\
 ({												\

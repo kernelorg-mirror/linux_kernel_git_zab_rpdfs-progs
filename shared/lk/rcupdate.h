@@ -19,5 +19,6 @@ extern void urcu_kfree_head(struct rcu_head *head);
 /* we're not checking __rcu in userspace yet */
 #define RCU_INITIALIZER(v) (typeof(*(v)) __force *)(v)
 #define unrcu_pointer(p) ((typeof(*p) __force *)(p))
+#define rcu_dereference_protected rcu_dereference
 
 #endif

@@ -55,6 +55,8 @@ static inline void put_page(struct page *page)
 	}
 }
 
+#define __free_page put_page
+
 static inline void *page_address(struct page *page)
 {
 	return page->buf;

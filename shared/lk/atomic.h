@@ -73,6 +73,18 @@ static inline void PREFIX##sub(TYPE i, ATOMIC *v)			\
 static inline TYPE PREFIX##cmpxchg(ATOMIC *v, TYPE old, TYPE new)	\
 {									\
 	return uatomic_cmpxchg(&v->counter, old, new);			\
+}									\
+									\
+static inline bool PREFIX##inc_unless_negative(ATOMIC *v)		\
+{									\
+	TYPE c = PREFIX##read(v);					\
+									\
+	do {								\
+		if (c < 0)						\
+			return false;					\
+	} while (PREFIX##cmpxchg(v, c, c + 1));				\
+									\
+	return true;							\
 }
 
 #define gen_atomics(SEP, TYPE) \
@@ -87,5 +99,10 @@ static inline TYPE PREFIX##cmpxchg(ATOMIC *v, TYPE old, TYPE new)	\
 gen_atomics(_, int)
 gen_atomics(_long_, long)
 gen_atomics(64_, s64)
+
+#define ANON_STRUCT_INIT_(x)	{{ .counter = (x) }}
+#define ATOMIC64_INIT		ANON_STRUCT_INIT_
+#define ATOMIC_LONG_INIT	ANON_STRUCT_INIT_
+#define ATOMIC_INIT		ANON_STRUCT_INIT_
 
 #endif

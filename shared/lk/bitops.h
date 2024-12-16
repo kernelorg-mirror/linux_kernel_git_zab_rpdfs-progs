@@ -151,4 +151,7 @@ static __always_inline unsigned long __ffs(unsigned long word)
         return __builtin_ctzl(word);
 }
 
+unsigned long find_next_bit(const unsigned long *addr, unsigned long size,
+                            unsigned long offset);
+
 #endif

@@ -9,61 +9,76 @@
 #define NGNFS_BLOCK_SHIFT	12
 #define NGNFS_BLOCK_SIZE	(1 << NGNFS_BLOCK_SHIFT)
 
-struct ngnfs_btree_ref {
+struct ngnfs_block_ref {
 	__le64 bnr;
-	/* XXX block alloc counter, too?  hmm. */
+	__le64 alloc_counter; /* XXX */
 };
 
 /*
- * We don't use the maximum size of either the key or value sizes.  It'd
- * be tempting to pack them into fewer bytes but the savings just isn't
- * worth it.  The smallest items are into the tens of bytes so saving a
- * byte doesn't justify the implementation and usability complexity.
+ * The height is one greater than the level of the referenced block.
+ * It's 0 for an empty tree.
  */
-struct ngnfs_btree_item {
-	__le16 val_size;
-	__u8 key_size;
-} __packed;
+struct ngnfs_btree_root {
+	struct ngnfs_block_ref ref;
+	__u8 _pad[7];
+	__u8 height;
+};
 
-#define NGNFS_BTREE_KEY_SIZE_MAX	U8_MAX
 /*
- * We want to avoid there only being a few items in a full block so we
- * chose a reasonably small fraction of the block size.
+ * Keys are relatively large to allow precise deletion of index keys
+ * which contain the generated 64bit key material as well as the logical
+ * identity of the inode that generated the key.  The words in the key
+ * value array are stored from most to least significant (k[0] is most
+ * significant).
  */
-#define NGNFS_BTREE_VAL_SIZE_MAX	512
+struct ngnfs_btree_key {
+	__le64 k[3];
+};
 
+/*
+ * The first and last keys record the range of item keys that can be
+ * found in the block.  It's dependent on (and redundant with) the keys
+ * of separating parent items.  Having it in the block makes tracking
+ * the range a bit easier to use and to update as we merge and split.
+ */
 struct ngnfs_btree_block {
+	struct ngnfs_btree_key first;
+	struct ngnfs_btree_key last;
 	__le64 bnr;
 	__le16 nr_items;
+	__le16 tail_free;
 	__le16 total_free;
-	__le16 avail_free;
 	__u8 level;
-	__u8 _pad;
-	__le16 item_off[];
+	__u8 _pad[1];
+	struct ngnfs_btree_item_header {
+		__le16 off;
+		__le16 val_size;
+	} ihdrs[];
 };
 
 /*
- * The minimum utilization of a block, as measured by the percentage of
- * the block after the header that contains items.  As a block's
- * utilization reaches this value it will be refilled from a sibling,
- * merging the two if they're both at the threshold.
- *
- * We set this lower than half the block so that alternating item
- * insertion and deletion doesn't repeatedly split and merge blocks as
- * they straddle a shared threshold.
+ * The item's value payload is 64bit aligned and immediately follows the
+ * item struct in the block.
  */
-#define NGNFS_BTREE_MIN_USED_PCT	35
-
-#define NGNFS_BTREE_MAX_FREE	(NGNFS_BLOCK_SIZE - sizeof(struct ngnfs_btree_block))
-#define NGNFS_BTREE_MAX_ITEMS								\
-	(NGNFS_BTREE_MAX_FREE / (sizeof_field(struct ngnfs_btree_block, item_off[0]) +	\
-				 sizeof(struct ngnfs_btree_item) + 1 + 0))
+struct ngnfs_btree_item {
+	struct ngnfs_btree_key key;
+	__u8 val[];
+};
 
 /*
- * The inode block is a btree block with the most significant byte of
- * the key indicating the type of data stored in the item.
+ * We want to avoid there only being a few items in a full block so we
+ * chose a reasonably small fraction of the block size.  The array of
+ * item headers is sized to fit the max number of items with no value
+ * payload, while aligning the first item after the array.
  */
-#define NGNFS_IBLOCK_KEY_INODE	0
+#define NGNFS_BTREE_MAX_VAL_SIZE	511
+#define NGNFS_BTREE_ITEM_ALIGN		8
+#define NGNFS_BTREE_MAX_ITEMS									\
+	ALIGN_DOWN(((NGNFS_BLOCK_SIZE - sizeof(struct ngnfs_btree_block)) /			\
+		   (sizeof(struct ngnfs_btree_key) + sizeof(struct ngnfs_btree_item_header))),	\
+		   NGNFS_BTREE_ITEM_ALIGN)
+#define NGNFS_BTREE_MAX_FREE									\
+	(NGNFS_BLOCK_SIZE - offsetof(struct ngnfs_btree_block, ihdrs[NGNFS_BTREE_MAX_ITEMS]))
 
 /*
  * Inodes are stored in inode blocks.  Inode blocks numbers are directly

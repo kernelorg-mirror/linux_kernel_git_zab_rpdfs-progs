@@ -227,6 +227,7 @@ static void get_block(struct ngnfs_block *bl)
 {
 	int now = atomic_inc_return(&bl->refcount);
 
+	trace_ngnfs_block_inc_refcount((long long)bl, now);
 	BUG_ON(now <= 0);
 }
 
@@ -236,6 +237,7 @@ static void put_block(struct ngnfs_block *bl)
 
 	if (!IS_ERR_OR_NULL(bl)) {
 		now = atomic_dec_return(&bl->refcount);
+		trace_ngnfs_block_dec_refcount((long long)bl, now);
 		if (now == 0)
 			call_rcu(&bl->rcu, free_block_rcu);
 		else

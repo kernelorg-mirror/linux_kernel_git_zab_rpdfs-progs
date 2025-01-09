@@ -30,6 +30,7 @@
 #include "shared/nerr.h"
 #include "shared/options.h"
 #include "shared/parse.h"
+#include "shared/thread.h"
 #include "shared/trace.h"
 
 struct mount_options {
@@ -41,7 +42,8 @@ struct mount_options {
 static struct option_more mount_moreopts[] = {
 	{ .longopt = { "devd_addr", required_argument, NULL, 'd' },
 	  .arg = "addr:port",
-	  .desc = "IPv4 address of devd server", },
+	  .desc = "IPv4 address of devd server",
+	  .required = 1, },
 
 	{ .longopt = { "trace_file", required_argument, NULL, 't' },
 	  .arg = "file_path",
@@ -88,6 +90,12 @@ out:
 	return ret;
 }
 
+/*
+ * This userspace "mount" helper is meant to capture all the boilerplate
+ * client setup that's needed before working with an ngnfs system.  It's
+ * meant to be run from a setup/monitoring thread which will then sit in
+ * thread_sigwait until shutdown when it will call unmount.
+ */
 int ngnfs_mount(struct ngnfs_fs_info *nfi, int argc, char **argv)
 {
 	struct mount_options opts = { .addr_list = LIST_HEAD_INIT(opts.addr_list), };
@@ -101,24 +109,23 @@ int ngnfs_mount(struct ngnfs_fs_info *nfi, int argc, char **argv)
 	if (ret < 0)
 		goto out;
 
-	if (opts.nr_addrs == 0) {
-		log("no -d devd addresses specified");
-		ret = -EINVAL;
+	ret = thread_prepare_main();
+	if (ret < 0) {
+		trace_destroy();
 		goto out;
 	}
 
 	ret = ngnfs_manifest_setup(nfi, &opts.addr_list, opts.nr_addrs) ?:
 	      ngnfs_msg_setup(nfi, &ngnfs_mtr_socket_ops, NULL, NULL) ?:
 	      ngnfs_block_setup(nfi, &ngnfs_btr_msg_ops, NULL);
-out:
 	if (ret < 0)
 		ngnfs_unmount(nfi);
 
+out:
 	list_for_each_entry_safe(ahead, tmp, &opts.addr_list, head) {
 		list_del_init(&ahead->head);
 		free(ahead);
 	}
-
 	return ret;
 }
 

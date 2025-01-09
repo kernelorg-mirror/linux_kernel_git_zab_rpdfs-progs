@@ -27,6 +27,7 @@
 struct debugfs_context {
 	struct ngnfs_fs_info *nfi;
 	u64 cwd_ino;
+	int ret;
 };
 
 #define LINE_SIZE (PATH_MAX * 5)
@@ -132,20 +133,9 @@ static void parse_command(struct debugfs_context *ctx, char *buf, char **argv)
 	cmd->func(ctx, argc, argv);
 }
 
-struct debugfs_thread_args {
-	int argc;
-	char **argv;
-	int ret;
-};
-
 static void debugfs_thread(struct thread *thr, void *arg)
 {
-	struct debugfs_thread_args *dargs = arg;
-	struct ngnfs_fs_info nfi = INIT_NGNFS_FS_INFO;
-	struct debugfs_context _ctx = {
-		.nfi = &nfi,
-		.cwd_ino = NGNFS_ROOT_INO,
-	}, *ctx = &_ctx;
+	struct debugfs_context *ctx = arg;
 	char **line_argv = NULL;
 	char *line = NULL;
 	int ret;
@@ -156,10 +146,6 @@ static void debugfs_thread(struct thread *thr, void *arg)
 		ret = -ENOMEM;
 		goto out;
 	}
-
-	ret = ngnfs_mount(&nfi, dargs->argc, dargs->argv);
-	if (ret < 0)
-		goto out;
 
 	/* make sure command names are sorted for bsearch */
 	qsort(commands, ARRAY_SIZE(commands), sizeof(commands[0]), compar_cmd_names);
@@ -173,12 +159,11 @@ static void debugfs_thread(struct thread *thr, void *arg)
 		parse_command(ctx, line, line_argv);
 	}
 
-	ngnfs_unmount(&nfi);
 	ret = 0;
 out:
 	free(line);
 	free(line_argv);
-	dargs->ret = ret;
+	ctx->ret = ret;
 }
 
 /*
@@ -190,29 +175,29 @@ out:
  */
 static int debugfs_func(int argc, char **argv)
 {
-	struct debugfs_thread_args dargs = {
-		.argc = argc,
-		.argv = argv,
+	struct ngnfs_fs_info nfi = INIT_NGNFS_FS_INFO;
+	struct debugfs_context ctx = {
+		.nfi = &nfi,
+		.cwd_ino = NGNFS_ROOT_INO,
 	};
 	struct thread thr;
 	int ret;
 
 	thread_init(&thr);
 
-	ret = thread_prepare_main();
+	ret = ngnfs_mount(&nfi, argc, argv);
 	if (ret < 0)
 		goto out;
 
-	ret = thread_start(&thr, debugfs_thread, &dargs) ?:
+	ret = thread_start(&thr, debugfs_thread, &ctx) ?:
 	      thread_sigwait();
 
 	thread_stop_indicate(&thr);
 	thread_stop_wait(&thr);
-
-out:
 	thread_finish_main();
-
-	return ret ?: dargs.ret;
+	ngnfs_unmount(&nfi);
+out:
+	return ret ?: ctx.ret;
 }
 
 static struct cli_command debugfs_cmd = {

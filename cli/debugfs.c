@@ -15,6 +15,7 @@
 #include "shared/lk/types.h"
 
 #include "shared/format-block.h"
+#include "shared/dir.h"
 #include "shared/inode.h"
 #include "shared/log.h"
 #include "shared/mkfs.h"
@@ -33,6 +34,20 @@ struct debugfs_context {
 #define LINE_SIZE (PATH_MAX * 5)
 #define MAX_ARGC ((LINE_SIZE + 1) / 2)
 
+static void cmd_create(struct debugfs_context *ctx, int argc, char **argv)
+{
+	int ret;
+
+	if (argc != 2) {
+		printf("must have one, and only one, file name to create\n");
+		return;
+	}
+
+	ret = ngnfs_dir_create(ctx->nfi, ctx->cwd_ino, 644, argv[1], strlen(argv[1]));
+	if (ret < 0)
+		printf("create error: "ENOF"\n", ENOA(-ret));
+}
+
 static void cmd_mkfs(struct debugfs_context *ctx, int argc, char **argv)
 {
 	int ret;
@@ -46,6 +61,45 @@ static void cmd_mkfs(struct debugfs_context *ctx, int argc, char **argv)
 	ret = ngnfs_block_sync(ctx->nfi);
 	if (ret < 0)
 		printf("final sync error: "ENOF"\n", ENOA(-ret));
+}
+
+static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
+{
+	struct ngnfs_readdir_entry *buf;
+	struct ngnfs_readdir_entry *ent;
+	const int size = NGNFS_READDIR_MIN_BUF_SIZE * 10;
+	u64 pos;
+	int ret;
+	int i;
+
+	buf = malloc(size);
+	if (!buf) {
+		printf("malloc error");
+		return;
+	}
+
+	pos = 0;
+	while (true) {
+		ret = ngnfs_dir_readdir(ctx->nfi, ctx->cwd_ino, pos, buf, size);
+		if (ret <= 0) {
+			if (ret < 0)
+				printf("readdir error: "ENOF"\n", ENOA(-ret));
+			break;
+		}
+
+		ent = buf;
+		for (i = 0; i < ret; i++) {
+			printf("%llu %llu %llu %.*s\n", ent->pos, ent->ino, ent->gen,
+			       ent->name_len, ent->name);
+			pos = ent->pos;
+			ent = (void *)ent + ent->next_offset;
+		}
+
+		if (pos++ == U64_MAX)
+			break;
+	}
+
+	free(buf);
 }
 
 static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
@@ -84,7 +138,9 @@ static struct command {
 	char *name;
 	void (*func)(struct debugfs_context *ctx, int argc, char **argv);
 } commands[] = {
+	{ "create", cmd_create, },
 	{ "mkfs", cmd_mkfs, },
+	{ "readdir", cmd_readdir, },
 	{ "stat", cmd_stat, },
 };
 

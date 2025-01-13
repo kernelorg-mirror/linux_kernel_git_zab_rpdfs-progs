@@ -39,4 +39,6 @@ static inline void kfree(void *ptr)
 		free(ptr);
 }
 
+#define kmalloc_array(n_, size_, flags_) kmalloc((n_) * (size_), (flags_))
+
 #endif

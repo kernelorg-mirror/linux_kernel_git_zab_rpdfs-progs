@@ -11,6 +11,7 @@
 #define __no_sanitize_or_inline		__no_kasan_or_inline
 #define __packed                        __attribute__((__packed__))
 #define __printf(a, b)			__attribute__((__format__(printf, a, b)))
+#define __unused			__attribute__((__unused__))
 
 /*
  * <linux/types.h> defines __bitwise

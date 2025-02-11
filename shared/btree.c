@@ -582,9 +582,6 @@ static int split_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 				       &trav->parent_tblk, &trav->parent);
 		if (ret < 0)
 			goto out;
-
-		init_block(trav->parent_tblk, trav->parent, bnr, trav->bt->level + 1,
-			   &min_key, &max_key);
 		insert_parent_ref(trav->parent_tblk, trav->parent, 0, trav->bt);
 	}
 

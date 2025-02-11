@@ -262,7 +262,6 @@ static int debugfs_func(int argc, char **argv)
 	ret = thread_start(&thr, debugfs_thread, &ctx) ?:
 	      thread_sigwait();
 
-	thread_stop_indicate(&thr);
 	thread_stop_wait(&thr);
 	ngnfs_unmount(&nfi);
 	thread_finish_main();

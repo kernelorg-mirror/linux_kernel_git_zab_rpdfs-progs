@@ -227,7 +227,9 @@ static void debugfs_thread(struct thread *thr, void *arg)
 			break;
 	}
 
-	ret = 0;
+	ret = ngnfs_block_sync(ctx->nfi);
+	if (ret < 0)
+		printf("final sync error: "ENOF"\n", ENOA(-ret));
 out:
 	free(line);
 	free(line_argv);

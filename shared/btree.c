@@ -313,7 +313,7 @@ static int cmp_ihdr_off(const void *A, const void *B, const void *priv)
 	const struct ngnfs_btree_item_header *a = &bt->ihdrs[*(u16 *)A];
 	const struct ngnfs_btree_item_header *b = &bt->ihdrs[*(u16 *)B];
 
-	return (int)le16_to_cpu(b->off) - (int)le16_to_cpu(a->off);
+	return (int)le16_to_cpu(a->off) - (int)le16_to_cpu(b->off);
 }
 
 /*

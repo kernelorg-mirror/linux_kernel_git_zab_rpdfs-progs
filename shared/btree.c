@@ -357,7 +357,7 @@ static int compact_items(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block 
 		if (le16_to_cpu(bt->ihdrs[ind].off) != off) {
 			dst = item_from_off(bt, off);
 			ngnfs_tblk_assign(tblk, bt->ihdrs[ind].off, cpu_to_le16(off));
-			ngnfs_tblk_memcpy(tblk, dst, item, bytes);
+			ngnfs_tblk_memmove(tblk, dst, item, bytes);
 		}
 
 		off += bytes;

@@ -142,6 +142,16 @@ static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 	}
 }
 
+static void cmd_sync(struct debugfs_context *ctx, int argc, char **argv)
+{
+	int ret;
+
+	ret = ngnfs_block_sync(ctx->nfi);
+	if (ret < 0)
+		printf("sync error: "ENOF"\n", ENOA(-ret));
+}
+
+
 static struct command {
 	char *name;
 	void (*func)(struct debugfs_context *ctx, int argc, char **argv);
@@ -151,6 +161,7 @@ static struct command {
 	{ "quit", cmd_quit, },
 	{ "readdir", cmd_readdir, },
 	{ "stat", cmd_stat, },
+	{ "sync", cmd_sync, },
 };
 
 static int compar_cmd_names(const void *A, const void *B)

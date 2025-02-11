@@ -25,6 +25,7 @@ static inline void INIT_WORK(struct work_struct *work, work_func_t func)
 {
 	cds_wfcq_node_init(&work->node);
 	work->func = func;
+	work->bits = 0;
 }
 
 bool queue_work(struct workqueue_struct *wq, struct work_struct *work);

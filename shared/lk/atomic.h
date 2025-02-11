@@ -77,12 +77,14 @@ static inline TYPE PREFIX##cmpxchg(ATOMIC *v, TYPE old, TYPE new)	\
 									\
 static inline bool PREFIX##inc_unless_negative(ATOMIC *v)		\
 {									\
-	TYPE c = PREFIX##read(v);					\
+	TYPE read = PREFIX##read(v);					\
+	TYPE old;							\
 									\
-	do {								\
-		if (c < 0)						\
-			return false;					\
-	} while (PREFIX##cmpxchg(v, c, c + 1));				\
+        do {                            				\
+		if (read < 0)           				\
+			return false;   				\
+		old = read;             				\
+	} while ((read = PREFIX##cmpxchg(v, old, old + 1)) != old);	\
 									\
 	return true;							\
 }

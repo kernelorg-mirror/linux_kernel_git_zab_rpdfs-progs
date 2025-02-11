@@ -29,6 +29,7 @@
 struct debugfs_context {
 	struct ngnfs_fs_info *nfi;
 	u64 cwd_ino;
+	bool quit;
 	int ret;
 };
 
@@ -62,6 +63,12 @@ static void cmd_mkfs(struct debugfs_context *ctx, int argc, char **argv)
 	ret = ngnfs_block_sync(ctx->nfi);
 	if (ret < 0)
 		printf("final sync error: "ENOF"\n", ENOA(-ret));
+}
+
+static void cmd_quit(struct debugfs_context *ctx, int argc, char **argv)
+{
+	ctx->quit = true;
+	return;
 }
 
 static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
@@ -141,6 +148,7 @@ static struct command {
 } commands[] = {
 	{ "create", cmd_create, },
 	{ "mkfs", cmd_mkfs, },
+	{ "quit", cmd_quit, },
 	{ "readdir", cmd_readdir, },
 	{ "stat", cmd_stat, },
 };
@@ -214,6 +222,9 @@ static void debugfs_thread(struct thread *thr, void *arg)
 			break;
 
 		parse_command(ctx, line, line_argv);
+
+		if (ctx->quit)
+			break;
 	}
 
 	ret = 0;
@@ -237,6 +248,7 @@ static int debugfs_func(int argc, char **argv)
 	struct debugfs_context ctx = {
 		.nfi = &nfi,
 		.cwd_ino = NGNFS_ROOT_INO,
+		.quit = false,
 	};
 	struct thread thr;
 	int ret;

@@ -1,9 +1,13 @@
 #!/bin/bash
 
-# can we find sparse?  If not, we're done.
-which sparse > /dev/null 2>&1 || exit 0
+# require sparse to build to prevent bugs
+which sparse > /dev/null 2>&1
+if [ "$?" != 0 ]; then
+	echo "Must install sparse to build"
+	exit 1
+fi
 
-# 
+#
 # one of the problems with using sparse in userspace is that it picks up
 # things in system headers that we don't care about.  We're willing to
 # take on the burden of filtering them out so that we can have it tell
@@ -53,7 +57,7 @@ else
 	m64=""
 fi
 
-sparse $m64 $include $search/include "$@" 2>&1 | egrep -v "($RE)" | tee .sparse.output
+sparse $m64 $include $search/include "$@" 2>&1 | grep -E -v "($RE)" | tee .sparse.output
 if  [ -s .sparse.output ]; then
 	exit 1
 else

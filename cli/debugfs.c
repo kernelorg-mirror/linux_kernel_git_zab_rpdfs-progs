@@ -45,7 +45,7 @@ static void cmd_create(struct debugfs_context *ctx, int argc, char **argv)
 		return;
 	}
 
-	ret = ngnfs_dir_create(ctx->nfi, ctx->cwd_ino, 644, argv[1], strlen(argv[1]));
+	ret = ngnfs_dir_create(ctx->nfi, ctx->cwd_ino, 0644, argv[1], strlen(argv[1]));
 	if (ret < 0)
 		printf("create error: "ENOF"\n", ENOA(-ret));
 }

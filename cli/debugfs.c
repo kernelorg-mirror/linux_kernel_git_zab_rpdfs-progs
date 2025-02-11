@@ -76,6 +76,7 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 	struct ngnfs_readdir_entry *buf;
 	struct ngnfs_readdir_entry *ent;
 	const int size = NGNFS_READDIR_MIN_BUF_SIZE * 10;
+	u64 total = 0;
 	u64 pos;
 	int ret;
 	int i;
@@ -97,15 +98,17 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 
 		ent = buf;
 		for (i = 0; i < ret; i++) {
-			printf("%llu %llu %llu %.*s\n", ent->pos, ent->ino, ent->gen,
+			printf("%020llu %10llu %5llu %.*s\n", ent->pos, ent->ino, ent->gen,
 			       ent->name_len, ent->name);
 			pos = ent->pos;
 			ent = (void *)ent + ent->next_offset;
 		}
 
+		total += ret;
 		if (pos++ == U64_MAX)
 			break;
 	}
+	printf("total %llu\n", total);
 
 	free(buf);
 }

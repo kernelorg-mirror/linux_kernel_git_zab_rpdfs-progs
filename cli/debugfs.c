@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
+#include <signal.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -220,6 +221,7 @@ out:
 	free(line);
 	free(line_argv);
 	ctx->ret = ret;
+	kill(0, SIGUSR1);
 }
 
 /*

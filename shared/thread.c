@@ -95,6 +95,9 @@ int thread_sigwait(void)
 			break;
 		}
 
+		if (sig == SIGUSR1)
+			break;
+
 		printf("got signal %u, exiting\n", sig);
 		exit(1);
 	}

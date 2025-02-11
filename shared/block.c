@@ -782,6 +782,9 @@ int ngnfs_block_sync(struct ngnfs_fs_info *nfi)
 	struct ngnfs_block_info *blinf = nfi->block_info;
 	struct ngnfs_block *bl;
 
+	if (atomic_read(&blinf->nr_dirty) == 0)
+		return 0;
+
 	bl = alloc_block(0, false);
 	if (IS_ERR(bl))
 		return PTR_ERR(bl);

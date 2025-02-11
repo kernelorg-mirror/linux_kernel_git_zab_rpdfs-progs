@@ -519,17 +519,33 @@ static void ngnfs_block_submit_work(struct work_struct *work)
 }
 
 /*
+ * We should start flushing when:
+ *
+ * There is room on the IO queue to submit more IOs, AND one of the
+ * following is true:
+ *
+ *  - the flushing list is non-empty
+ *  - the number of dirty blocks is above the dirty threshold
+ *  - there is a synchronous waiter
+ *
+ * Anything on the flush list has a read reference and can't be written,
+ * so it's important to get it submitted ASAP.
+ *
  * XXX barriers?
  */
 static int should_flush(struct ngnfs_block_info *blinf)
 {
 	int dirty = atomic_read(&blinf->nr_dirty);
 	int flushing = atomic_read(&blinf->nr_flushing);
-	int depth = blinf->queue_depth * 2;
+	int submitted = atomic_read(&blinf->nr_submitted);
+	/* Avoid submitting one block at a time */
+	int depth = blinf->queue_depth / 2;
 
-	if (dirty > flushing && flushing < depth &&
-	    ((dirty > FLUSH_THRESH) || (atomic_read(&blinf->sync_waiters) >= SYNC_WAITERS_INC)))
-		return min(dirty, depth - flushing);
+	if ((submitted < depth) &&
+	    (flushing ||
+	     (dirty > FLUSH_THRESH) ||
+	     (atomic_read(&blinf->sync_waiters) >= SYNC_WAITERS_INC)))
+		return min(dirty, depth - submitted);
 	else
 		return 0;
 }
@@ -571,6 +587,7 @@ static void ngnfs_block_flush_work(struct work_struct *work)
 			list_del_init(&bl->dirty_head);
 			llist_add(&bl->dirty_llnode, &blinf->clean.llist);
 			queue_clean_work(blinf);
+			submitted = true;
 			continue;
 		}
 
@@ -594,8 +611,9 @@ static void ngnfs_block_flush_work(struct work_struct *work)
 		submitted = true;
 	}
 
-	if (submitted)
+	if (submitted || should)
 		try_queue_submit_work(blinf);
+
 }
 
 static void queue_clean_work(struct ngnfs_block_info *blinf)

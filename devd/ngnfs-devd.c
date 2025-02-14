@@ -27,8 +27,11 @@
 #include "shared/thread.h"
 #include "shared/trace.h"
 
-#include "devd/recv.h"
-#include "devd/btr-aio.h"
+#include "utask/block.h"
+#include "utask/net.h"
+#include "utask/utask.h"
+
+#include "devd/proc.h"
 
 struct devd_options {
 	char *dev_path;
@@ -73,9 +76,11 @@ static int parse_devd_opt(int c, char *str, void *arg)
 	return ret;
 }
 
+#define BLOCK_QUEUE_DEPTH	32
+#define NET_QUEUE_DEPTH		16 /* XXX no idea */
+
 int main(int argc, char **argv)
 {
-	struct ngnfs_fs_info nfi = INIT_NGNFS_FS_INFO;
 	struct devd_options opts = { };
 	int ret;
 
@@ -85,20 +90,14 @@ int main(int argc, char **argv)
 	if (ret < 0)
 		goto out;
 
-	ret = thread_prepare_main();
-	if (ret < 0)
-		goto out;
+	ret = utask_init(BLOCK_QUEUE_DEPTH + NET_QUEUE_DEPTH) ?:
+	      net_register_recv(proc_recv) ?:
+	      net_listen(&opts.listen_addr) ?:
+	      block_init(opts.dev_path, BLOCK_QUEUE_DEPTH) ?:
+	      utask_run();
 
-	ret = ngnfs_msg_setup(&nfi, &ngnfs_mtr_socket_ops, NULL, &opts.listen_addr) ?:
-	      ngnfs_block_setup(&nfi, &ngnfs_btr_aio_ops, opts.dev_path) ?:
-	      devd_recv_setup(&nfi) ?:
-	      thread_sigwait();
-
-	devd_recv_destroy(&nfi);
-	ngnfs_block_destroy(&nfi);
-	ngnfs_msg_destroy(&nfi);
-
-	thread_finish_main();
+	block_exit();
+	utask_exit();
 out:
 	trace_destroy();
 	return !!ret;

@@ -4,6 +4,7 @@
 cscope.*
 .sparse.*
 shared/generated-trace-inlines.h
+utask/utask_gen_defs.h
 cli/ngnfs-cli
 devd/ngnfs-devd
 lib/libngnfs.a

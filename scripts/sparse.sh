@@ -26,6 +26,11 @@ RE="$RE|warning: memset with byte count of 4194304"
 # some sparse versions don't know about some builtins
 RE="$RE|error: undefined identifier '__builtin_fpclassify'"
 
+# I didn't really dig in, but io_uring and glibc are fighting
+RE="$RE|note: .*through.*uring"
+RE="$RE|RWF.* redefined"
+RE="$RE|uio-ext.h.*original definition"
+
 #
 # don't filter out 'too many errors' here, it can signify that
 # sparse doesn't understand something and is throwing a *ton*

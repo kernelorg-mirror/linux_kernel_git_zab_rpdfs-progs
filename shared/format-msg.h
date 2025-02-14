@@ -8,10 +8,12 @@
 #include "shared/lk/types.h"
 
 enum {
-	NGNFS_MSG_GET_BLOCK = 0,
-	NGNFS_MSG_GET_BLOCK_RESULT,
-	NGNFS_MSG_WRITE_BLOCK,
-	NGNFS_MSG_WRITE_BLOCK_RESULT,
+	NGNFS_MSG_BLOCK_READ = 0,
+	NGNFS_MSG_BLOCK_READ_RESULT,
+	NGNFS_MSG_BLOCK_WRITE,
+	NGNFS_MSG_BLOCK_WRITE_RESULT,
+	NGNFS_MSG_BLOCK_MODE_SET,
+	NGNFS_MSG_BLOCK_MODE_ACK,
 	NGNFS_MSG__NR,
 };
 
@@ -23,10 +25,21 @@ enum {
 	NGNFS_MSG_ERR__INVALID,
 };
 
+/*
+ * _NULL is 0 so we can have natural if (mode) tests.  _NONE is the mode
+ * that grants no access and causes the client and server to free
+ * tracking of the cached block.
+ *
+ * The modes are also numerically sorted from least to most restrictive.
+ * NONE is compat with everything, read isn't compatible with write, and
+ * write is compatible with nothing.
+ */
 enum {
-	NGNFS_MSG_BLOCK_ACCESS_READ = 0,
-	NGNFS_MSG_BLOCK_ACCESS_WRITE,
-	NGNFS_MSG_BLOCK_ACCESS__UNKNOWN,
+	NGNFS_CACHE_MODE_NULL = 0,
+	NGNFS_CACHE_MODE_NONE,
+	NGNFS_CACHE_MODE_READ,
+	NGNFS_CACHE_MODE_WRITE,
+	NGNFS_CACHE_MODE__INVALID,
 };
 
 struct ngnfs_msg_header {
@@ -39,26 +52,37 @@ struct ngnfs_msg_header {
 #define NGNFS_MSG_MAX_CTL_SIZE	255
 #define NGNFS_MSG_MAX_DATA_SIZE 4096
 
-struct ngnfs_msg_get_block {
+struct ngnfs_msg_block_read {
 	__le64 bnr;
-	__u8 access;
+	__le64 flags;
+	__u8 mode;
 	__u8 _pad[7];
 };
 
-struct ngnfs_msg_get_block_result {
+struct ngnfs_msg_block_read_result {
 	__le64 bnr;
-	__u8 access;
+	__u8 mode;
 	__u8 err;
 	__u8 _pad[6];
 };
 
-struct ngnfs_msg_write_block {
+#define NGNFS_MSG_BLOCK_READ_FLAG_NO_DATA	(1 << 0)
+
+struct ngnfs_msg_block_write {
 	__le64 bnr;
+	__u8 mode;
+	__u8 _pad[7];
 };
 
-struct ngnfs_msg_write_block_result {
+struct ngnfs_msg_block_write_result {
 	__le64 bnr;
 	__u8 err;
+	__u8 _pad[7];
+};
+
+struct ngnfs_msg_cache_mode {
+	__le64 bnr;
+	__u8 mode;
 	__u8 _pad[7];
 };
 

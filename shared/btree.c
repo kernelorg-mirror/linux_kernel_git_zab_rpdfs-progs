@@ -49,7 +49,7 @@
  * deletion of a few items doesn't bounce a pair of blocks between
  * splitting and merging.
  */
-#define NGNFS_BTREE_MERGE_FREE_THRESH	(NGNFS_BTREE_MAX_FREE * 40 / 100)
+#define NGNFS_BTREE_MERGE_FREE_THRESH	(NGNFS_BTREE_MAX_FREE * (100 - 40) / 100)
 
 /*
  * If an insertion could be performed after compacting free space, but
@@ -248,15 +248,13 @@ static struct ngnfs_btree_item *insert_item(struct ngnfs_txn_block *tblk,
 					    struct ngnfs_btree_block *bt, u16 ind,
 					    struct ngnfs_btree_key *key, void *val, u16 val_size)
 {
-	struct ngnfs_btree_item *item;
-	u16 bytes;
-	u16 off;
+	u16 off = NGNFS_BLOCK_SIZE - le16_to_cpu(bt->tail_free);
+	struct ngnfs_btree_item *item = item_from_off(bt, off);
+	u16 bytes = aligned_item_size(val_size);
 
 	BUG_ON(ind >= NGNFS_BTREE_MAX_ITEMS);
-
-	bytes = aligned_item_size(val_size);
-	off = NGNFS_BLOCK_SIZE - le16_to_cpu(bt->tail_free);
-	item = item_from_off(bt, off);
+	BUG_ON(le16_to_cpu(bt->tail_free) - bytes > NGNFS_BTREE_MAX_FREE);
+	BUG_ON(le16_to_cpu(bt->total_free) - bytes > NGNFS_BTREE_MAX_FREE);
 
 	memmove_item_headers(tblk, bt, ind, 1);
 	ngnfs_tblk_le16_add_cpu(tblk, &bt->tail_free, -bytes);
@@ -294,6 +292,9 @@ static void delete_item(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block *
 	u16 bytes = aligned_item_size(item_val_size(bt, ind));
 	u16 off = le16_to_cpu(bt->ihdrs[ind].off);
 	u16 nr;
+
+	BUG_ON(le16_to_cpu(bt->tail_free) + bytes > NGNFS_BTREE_MAX_FREE);
+	BUG_ON(le16_to_cpu(bt->total_free) + bytes > NGNFS_BTREE_MAX_FREE);
 
 	if (off == NGNFS_BLOCK_SIZE - le16_to_cpu(bt->tail_free) - bytes)
 		ngnfs_tblk_le16_add_cpu(tblk, &bt->tail_free, bytes);

@@ -23,6 +23,13 @@ DGH := shared/generated-trace-inlines.h
 # source with main() is linked as a binary
 BIN := $(patsubst %.c,%,$(shell grep -l "^int main" $(SRC)))
 
+# make a static library out of everything in shared
+LIB := lib/libngnfs.a
+LIB_DIR := shared shared/lk
+LIB_SRC := $(foreach d,$(LIB_DIR),$(wildcard $(d)/*.c))
+LIB_OBJ := $(patsubst %.c,%.o,$(LIB_SRC))
+LIB_DEP := $(foreach d,$(LIB_DIR),$(wildcard $(d)/*.d))
+
 # binary names have ngnfs- prefixed
 #binname = $(dir $1)ngnfs-$(notdir $1)
 
@@ -34,7 +41,7 @@ BIN := $(patsubst %.c,%,$(shell grep -l "^int main" $(SRC)))
 PADCHECK := $(patsubst %.h,%.o.padcheck,$(wildcard shared/format-*.h))
 
 .PHONY: all
-all: $(PADCHECK) $(BIN) $(DGH)
+all: $(PADCHECK) $(BIN) $(DGH) $(LIB)
 
 ifneq ($(DEP),)
 -include $(DEP)
@@ -60,9 +67,13 @@ $(PADCHECK): %.o.padcheck: %.h Makefile
 $(DGH): scripts/generate-trace-events.awk shared/trace-events.txt Makefile
 	gawk -f $< < shared/trace-events.txt > $@
 
+$(LIB): $(LIB_OBJ) Makefile
+	ar rcs $@ $(LIB_OBJ)
+	ranlib $@
+
 .PHONY: clean
 clean:
-	@rm -f $(BIN) $(OBJ) $(DEP) $(PADCHECK) $(DGH) \
+	@rm -f $(BIN) $(OBJ) $(DEP) $(PADCHECK) $(DGH) $(LIB)\
 		$(foreach d,$(DIR),$(wildcard $(d)/*.[is])) \
 		.sparse.gcc-defines.h .sparse.output
 

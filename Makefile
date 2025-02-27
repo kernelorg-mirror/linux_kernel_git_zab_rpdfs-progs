@@ -18,6 +18,7 @@ DIR := cli devd shared shared/lk
 SRC := $(foreach d,$(DIR),$(wildcard $(d)/*.c))
 OBJ := $(patsubst %.c,%.o,$(SRC))
 DEP := $(foreach d,$(DIR),$(wildcard $(d)/*.d))
+DGH := shared/generated-trace-inlines.h
 
 # source with main() is linked as a binary
 BIN := $(patsubst %.c,%,$(shell grep -l "^int main" $(SRC)))
@@ -33,7 +34,7 @@ BIN := $(patsubst %.c,%,$(shell grep -l "^int main" $(SRC)))
 PADCHECK := $(patsubst %.h,%.o.padcheck,$(wildcard shared/format-*.h))
 
 .PHONY: all
-all: shared/generated-trace-inlines.h $(PADCHECK) $(BIN)
+all: $(PADCHECK) $(BIN) $(DGH)
 
 ifneq ($(DEP),)
 -include $(DEP)
@@ -49,21 +50,19 @@ $(BIN): %: %.o 	$$(filter $$(dir %)$$(PERCENT),$$(OBJ)) \
 
 #	gcc $(LDFLAGS) -o $(call binname,$@) $^
 
-%.o %.d: %.c Makefile
+%.o %.d: %.c $(DGH) Makefile
 	gcc $(CFLAGS) -MD -MP -MF $*.d -c $< -o $*.o
 	./scripts/sparse.sh -Wbitwise -D__CHECKER__ $(CFLAGS) $<
 
 $(PADCHECK): %.o.padcheck: %.h Makefile
 	gcc $(CFLAGS) -Wpadded -c $< -o $@
 
-shared/generated-trace-inlines.h: scripts/generate-trace-events.awk \
-				  shared/trace-events.txt Makefile
+$(DGH): scripts/generate-trace-events.awk shared/trace-events.txt Makefile
 	gawk -f $< < shared/trace-events.txt > $@
 
 .PHONY: clean
 clean:
-	@rm -f $(BIN) $(OBJ) $(DEP) $(PADCHECK) \
+	@rm -f $(BIN) $(OBJ) $(DEP) $(PADCHECK) $(DGH) \
 		$(foreach d,$(DIR),$(wildcard $(d)/*.[is])) \
-		shared/generated-trace-inlines.h \
 		.sparse.gcc-defines.h .sparse.output
 

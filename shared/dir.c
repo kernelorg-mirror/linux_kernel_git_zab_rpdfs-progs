@@ -7,6 +7,7 @@
 #include "shared/lk/byteorder.h"
 #include "shared/lk/container_of.h"
 #include "shared/lk/errno.h"
+#include "shared/lk/fs_types.h"
 #include "shared/lk/kernel.h"
 #include "shared/lk/ktime.h"
 #include "shared/lk/limits.h"
@@ -53,7 +54,7 @@ static u64 name_hash(void *name, size_t name_len)
 struct dirent_args {
 	u64 hash;
 	size_t dent_size;
-	mode_t mode;
+	u8 dtype;
 	u64 ino;
 
 	struct ngnfs_dirent dent;
@@ -67,10 +68,41 @@ static void init_dirent_key(struct ngnfs_btree_key *key, u64 hash)
 	};
 }
 
-/* XXX :) */
-static u8 ngnfs_dt(umode_t mode)
+/* Convert a POSIX file mode to an ngnfs on-disk dirent type */
+static enum ngnfs_dentry_type mode_to_type(umode_t mode)
 {
-	return 0;
+#define S_SHIFT 12
+	static unsigned char mode_types[S_IFMT >> S_SHIFT] = {
+		[S_IFIFO >> S_SHIFT]	= NGNFS_DT_FIFO,
+		[S_IFCHR >> S_SHIFT]	= NGNFS_DT_CHR,
+		[S_IFDIR >> S_SHIFT]	= NGNFS_DT_DIR,
+		[S_IFBLK >> S_SHIFT]	= NGNFS_DT_BLK,
+		[S_IFREG >> S_SHIFT]	= NGNFS_DT_REG,
+		[S_IFLNK >> S_SHIFT]	= NGNFS_DT_LNK,
+		[S_IFSOCK >> S_SHIFT]	= NGNFS_DT_SOCK,
+	};
+
+	return mode_types[(mode & S_IFMT) >> S_SHIFT];
+#undef S_SHIFT
+}
+
+/* Convert the on-disk ngnfs dirent dtype to the POSIX d_type */
+unsigned int ngnfs_type_to_dtype(enum ngnfs_dentry_type type)
+{
+	static unsigned char types[] = {
+		[NGNFS_DT_FIFO]	= DT_FIFO,
+		[NGNFS_DT_CHR]	= DT_CHR,
+		[NGNFS_DT_DIR]	= DT_DIR,
+		[NGNFS_DT_BLK]	= DT_BLK,
+		[NGNFS_DT_REG]	= DT_REG,
+		[NGNFS_DT_LNK]	= DT_LNK,
+		[NGNFS_DT_SOCK]	= DT_SOCK,
+	};
+
+	if (type < ARRAY_SIZE(types))
+		return types[type];
+
+	return DT_UNKNOWN;
 }
 
 static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len, u64 ino,
@@ -78,11 +110,11 @@ static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len
 {
 	da->hash = name_hash(name, name_len);
 	da->dent_size = offsetof(struct ngnfs_dirent, name) + name_len;
-	da->mode = mode;
+	da->dtype = IFTODT(mode);
 
 	da->dent.ino = cpu_to_le64(ino);
 	da->dent.version = cpu_to_le64(0); /* XXX :/ */
-	da->dent.dtype = ngnfs_dt(mode);
+	da->dent.type = mode_to_type(mode);
 	da->dent.name_len = name_len;
 
 	/* ensure that we're stitching together a contiguous max name buffer */
@@ -118,7 +150,7 @@ static int update_dir(struct ngnfs_txn_block *tblk, struct ngnfs_inode *dir,
 	s32 delta;
 	int ret;
 
-	if (S_ISDIR(da->mode)) {
+	if (S_ISDIR(le32_to_cpu(dir->mode))) {
 		delta = posneg * 1;
 		if ((le32_to_cpu(dir->nlink) + delta >= NGNFS_LINK_MAX)) {
 			ret = -EMLINK;
@@ -222,13 +254,13 @@ int ngnfs_dir_create(struct ngnfs_fs_info *nfi, u64 dir_ino, umode_t mode, char 
 
 	ngnfs_txn_init(&op->txn);
 	op->nsec = ktime_to_ns(ktime_get_real());
-	init_dirent_args(&op->da, name, name_len, 0, mode);
+	init_dirent_args(&op->da, name, name_len, 0, mode | S_IFREG);
 
 	do {
 		ret = ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, dir_ino, &op->dir)		?:
 		      check_ifmt(op->dir.ninode, S_IFDIR, -ENOTDIR)				?:
 		      ngnfs_inode_alloc(nfi, &op->txn, &op->ino, &op->inode)			?:
-		      ngnfs_inode_init(&op->inode, op->ino, 1, 1, mode, op->nsec)		?:
+		      ngnfs_inode_init(&op->inode, op->ino, 1, 1, mode | S_IFREG, op->nsec)	?:
 		      update_dirent_args_ino(&op->da, op->ino)					?:
 		      insert_dirent(nfi, &op->txn, &op->dir, &op->da)				?:
 		      update_dir(op->dir.tblk, op->dir.ninode, &op->da, 1);
@@ -264,7 +296,7 @@ static int fill_dirent_rd(struct ngnfs_btree_key *key, void *val, size_t val_siz
 	ra->ent->ino = le64_to_cpu(dent->ino);
 	ra->ent->gen = le64_to_cpu(dent->version);
 	ra->ent->next_offset = aligned;
-	ra->ent->dtype = 0;
+	ra->ent->dtype = ngnfs_type_to_dtype(dent->type);
 	ra->ent->name_len = dent->name_len;
 	memcpy(ra->ent->name, dent->name, dent->name_len);
 	ra->ent->name[ra->ent->name_len] = '\0';

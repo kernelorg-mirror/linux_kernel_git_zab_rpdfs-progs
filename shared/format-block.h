@@ -112,10 +112,20 @@ struct ngnfs_inode {
  */
 #define NGNFS_LINK_MAX	S32_MAX
 
+enum ngnfs_dentry_type {
+	NGNFS_DT_FIFO = 0,
+	NGNFS_DT_CHR,
+	NGNFS_DT_DIR,
+	NGNFS_DT_BLK,
+	NGNFS_DT_REG,
+	NGNFS_DT_LNK,
+	NGNFS_DT_SOCK,
+};
+
 struct ngnfs_dirent {
 	__le64 ino;
 	__le64 version; /* XXX ? */
-	__u8 dtype;
+	__u8 type;
 	__u8 name_len; /* no null termination */
 	__u8 name[6]; /* definition pads to alignment, stored can be smaller */
 };

@@ -12,7 +12,6 @@
 #include "shared/lk/byteorder.h"
 #include "shared/lk/err.h"
 #include "shared/lk/kernel.h"
-#include "shared/lk/timekeeping.h"
 #include "shared/lk/types.h"
 
 #include "shared/format-block.h"
@@ -22,7 +21,6 @@
 #include "shared/mkfs.h"
 #include "shared/mount.h"
 #include "shared/thread.h"
-#include "shared/txn.h"
 
 #include "cli/cli.h"
 
@@ -98,8 +96,8 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 
 		ent = buf;
 		for (i = 0; i < ret; i++) {
-			printf("%020llu %10llu %5llu %.*s\n", ent->pos, ent->ino, ent->gen,
-			       ent->name_len, ent->name);
+			printf("%020llu %10llu %5llu %05o %.*s\n", ent->pos, ent->ino, ent->gen,
+			       ent->dtype, ent->name_len, ent->name);
 			pos = ent->pos;
 			ent = (void *)ent + ent->next_offset;
 		}

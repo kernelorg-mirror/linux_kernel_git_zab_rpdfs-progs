@@ -56,21 +56,6 @@ typedef enum {
 /* these flags are mutually exclusive */
 #define NBF_RW_EXCL	(NBF_READ | NBF_WRITE)
 
-enum {
-	NGNFS_BTX_OP_GET_READ,
-	NGNFS_BTX_OP_GET_WRITE,
-	NGNFS_BTX_OP_WRITE,
-};
-
-struct ngnfs_block_transport_ops {
-	void *(*setup)(struct ngnfs_fs_info *nfi, void *arg);
-	void (*shutdown)(struct ngnfs_fs_info *nfi, void *btr_info);
-	void (*destroy)(struct ngnfs_fs_info *nfi, void *btr_info);
-	int (*queue_depth)(struct ngnfs_fs_info *nfi, void *btr_info);
-	int (*submit_block)(struct ngnfs_fs_info *nfi, void *btr_info,
-			    int op, u64 bnr, struct page *data_page);
-};
-
 struct ngnfs_block *ngnfs_block_get(struct ngnfs_fs_info *nfi, u64 bnr, nbf_t nbf);
 void ngnfs_block_put(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl, nbf_t nbf);
 void *ngnfs_block_buf(struct ngnfs_block *bl);
@@ -81,10 +66,7 @@ int ngnfs_block_dirty_begin(struct ngnfs_fs_info *nfi, struct list_head *list, s
 void ngnfs_block_dirty_end(struct ngnfs_fs_info *nfi, struct list_head *list, ssize_t off);
 int ngnfs_block_sync(struct ngnfs_fs_info *nfi);
 
-void ngnfs_block_end_io(struct ngnfs_fs_info *nfi, u64 bnr, struct page *data_page, int err);
-
-int ngnfs_block_setup(struct ngnfs_fs_info *nfi, struct ngnfs_block_transport_ops *btr_ops,
-		      void *btr_setup_arg);
+int ngnfs_block_setup(struct ngnfs_fs_info *nfi, int queue_depth);
 void ngnfs_block_destroy(struct ngnfs_fs_info *nfi);
 
 #endif

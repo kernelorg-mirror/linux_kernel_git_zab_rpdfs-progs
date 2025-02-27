@@ -17,9 +17,12 @@
 #include "shared/lk/wait.h"
 #include "shared/lk/workqueue.h"
 
-#include "shared/format-block.h"
-#include "shared/fs_info.h"
 #include "shared/block.h"
+#include "shared/format-block.h"
+#include "shared/format-msg.h"
+#include "shared/fs_info.h"
+#include "shared/manifest.h"
+#include "shared/msg.h"
 #include "shared/trace.h"
 
 /*
@@ -105,9 +108,6 @@ struct ngnfs_block_info {
 	struct block_work_list submit;
 	struct block_work_list clean;
 
-	struct ngnfs_block_transport_ops *btr_ops;
-	void *btr_info;
-
 	wait_queue_head_t waitq;
 };
 
@@ -130,7 +130,7 @@ struct ngnfs_block {
 enum {
 	/*
 	 * An IO is in flight.  Set when added to the submit list and
-	 * cleared by the end_io callback.
+	 * cleared when we receive io result messages. 
 	 */
 	BL_IO_PENDING = 0,
 	/*
@@ -327,6 +327,20 @@ static int sync_waiters_dec_error(struct ngnfs_block_info *blinf)
 	return ret;
 }
 
+static int send_to_bnr(struct ngnfs_fs_info *nfi, u64 bnr, struct ngnfs_msg_desc *mdesc)
+{
+	struct sockaddr_in addr;
+	int ret;
+
+	ret = ngnfs_manifest_map_block(nfi, bnr, &addr);
+	if (ret == 0) {
+		mdesc->addr = &addr;
+		ret = ngnfs_msg_send(nfi, mdesc);
+	}
+
+	return ret;
+}
+
 static const struct rhashtable_params ngnfs_block_ht_params = {
         .head_offset = offsetof(struct ngnfs_block, rhead),
         .key_offset = offsetof(struct ngnfs_block, bnr),
@@ -376,48 +390,118 @@ static struct ngnfs_block *lookup_or_alloc_block(struct ngnfs_block_info *blinf,
 	return bl;
 }
 
+static int send_get_block(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl)
+{
+	struct ngnfs_msg_get_block gb;
+	struct ngnfs_msg_desc mdesc;
+
+	gb.bnr = cpu_to_le64(bl->bnr);
+	gb.access = NGNFS_MSG_BLOCK_ACCESS_READ;
+	mdesc.ctl_buf = &gb;
+	mdesc.ctl_size = sizeof(gb);
+	mdesc.data_page = NULL;
+	mdesc.data_size = 0;
+	mdesc.type = NGNFS_MSG_GET_BLOCK;
+
+	return send_to_bnr(nfi, bl->bnr, &mdesc);
+}
+
+static int send_write_block(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl)
+{
+	struct ngnfs_msg_write_block wb;
+	struct ngnfs_msg_desc mdesc;
+
+	wb.bnr = cpu_to_le64(bl->bnr);
+	mdesc.ctl_buf = &wb;
+	mdesc.ctl_size = sizeof(wb);
+	mdesc.data_page = bl->page;
+	mdesc.data_size = NGNFS_BLOCK_SIZE;
+	mdesc.type = NGNFS_MSG_WRITE_BLOCK;
+
+	return send_to_bnr(nfi, bl->bnr, &mdesc);
+}
+
 /*
  * An incoming data_page ref is only used for reads. Writes always
  * manage source page that contains their written contents.  If a read
  * data_page is provided then we swap it in to place and drop the old
  * (unused) block page.
  */
-void ngnfs_block_end_io(struct ngnfs_fs_info *nfi, u64 bnr, struct page *data_page, int err)
+static int recv_get_block_result(struct ngnfs_fs_info *nfi, struct ngnfs_msg_desc *mdesc)
 {
 	struct ngnfs_block_info *blinf = nfi->block_info;
+	struct ngnfs_msg_get_block_result *gbr = mdesc->ctl_buf;
 	struct ngnfs_block *bl;
-	bool is_write;
-	int nr_dirty;
+	int err;
 
-	/* XXX describe trying page granular pinning */
+	/*
+	 * This may grow cases where it's fine to be granted write
+	 * access to an existing block without a data payload because
+	 * you indicated the intent to free it without reading it.
+	 */
+	if (mdesc->ctl_size != sizeof(struct ngnfs_msg_get_block_result) ||
+	    ((gbr->err == NGNFS_MSG_ERR_OK) && (mdesc->data_size != NGNFS_BLOCK_SIZE)) ||
+	    ((gbr->err != NGNFS_MSG_ERR_OK) && (mdesc->data_size != 0)))
+		return -EINVAL;
 
-	bl = lookup_block(blinf, bnr);
+	bl = lookup_block(blinf, le64_to_cpu(gbr->bnr));
 	assert(!IS_ERR_OR_NULL(bl)); /* not supporting this failure yet */
-	is_write = !!test_bit(BL_DIRTY, &bl->bits);
 
+	err = ngnfs_msg_errno(gbr->err);
 	if (err) {
 		if (!test_and_set_bit(BL_ERROR, &bl->bits))
 			bl->error = err;
-		if (is_write)
-			sync_waiters_set_error(blinf);
-	}
-
-	if (is_write) {
-		/* updating accounting here, clean work puts reader */
-		clear_bit(BL_DIRTY, &bl->bits);
-		nr_dirty = atomic_dec_return(&blinf->nr_dirty);
 	} else {
 		if (!test_bit(BL_ERROR, &bl->bits))
 			set_bit(BL_UPTODATE, &bl->bits);
 
-		if (data_page) {
+		if (mdesc->data_page) {
 			/* this means that _block_buf() will change, callers beware */
 			if (bl->page)
 				put_page(bl->page);
-			bl->page = data_page;
+			bl->page = mdesc->data_page;
 			get_page(bl->page);
 		}
 	}
+	clear_bit(BL_IO_PENDING, &bl->bits);
+	atomic_dec(&blinf->nr_submitted);
+
+	barrier(); /* RELEASE: all block updates visible before we queue/wake */
+
+	wake_up(&bl->waitq);
+	put_block(bl);
+
+	return 0;
+}
+
+static int recv_write_block_result(struct ngnfs_fs_info *nfi, struct ngnfs_msg_desc *mdesc)
+{
+	struct ngnfs_block_info *blinf = nfi->block_info;
+	struct ngnfs_msg_write_block_result *wbr = mdesc->ctl_buf;
+	struct ngnfs_block *bl;
+	int nr_dirty;
+	int err;
+
+	if (mdesc->ctl_size != sizeof(struct ngnfs_msg_write_block_result) ||
+	    mdesc->data_size != 0)
+		return -EINVAL;
+
+	/* XXX describe trying page granular pinning */
+
+	bl = lookup_block(blinf, le64_to_cpu(wbr->bnr));
+	assert(!IS_ERR_OR_NULL(bl)); /* not supporting this failure yet */
+	BUG_ON(!test_bit(BL_DIRTY, &bl->bits));
+
+	err = ngnfs_msg_errno(wbr->err);
+	if (err) {
+		if (!test_and_set_bit(BL_ERROR, &bl->bits))
+			bl->error = err;
+		sync_waiters_set_error(blinf);
+	}
+
+	/* updating accounting here, clean work puts reader */
+	clear_bit(BL_DIRTY, &bl->bits);
+	nr_dirty = atomic_dec_return(&blinf->nr_dirty);
 
 	clear_bit(BL_IO_PENDING, &bl->bits);
 	atomic_dec(&blinf->nr_submitted);
@@ -427,12 +511,12 @@ void ngnfs_block_end_io(struct ngnfs_fs_info *nfi, u64 bnr, struct page *data_pa
 	wake_up(&bl->waitq);
 	put_block(bl);
 
-	if (is_write) {
-		try_queue_flush_work(blinf);
-		queue_clean_work(blinf);
-		if (nr_dirty < DIRTY_LIMIT && waitqueue_active(&blinf->waitq))
-			wake_up(&blinf->waitq);
-	}
+	try_queue_flush_work(blinf);
+	queue_clean_work(blinf);
+	if (nr_dirty < DIRTY_LIMIT && waitqueue_active(&blinf->waitq))
+		wake_up(&blinf->waitq);
+
+	return 0;
 }
 
 /*
@@ -490,7 +574,6 @@ static void ngnfs_block_submit_work(struct work_struct *work)
 	int submitted;
 	int space;
 	int ret;
-	int op;
 
 	del_all_reverse_add_tail(&blinf->submit.list, &blinf->submit.llist,
 				 offsetof(struct ngnfs_block, submit_head) -
@@ -505,10 +588,10 @@ static void ngnfs_block_submit_work(struct work_struct *work)
 
 		list_del_init(&bl->submit_head);
 
-		/* XXX _GET_WRITE isn't implemented */
-		op = test_bit(BL_DIRTY, &bl->bits) ? NGNFS_BTX_OP_WRITE : NGNFS_BTX_OP_GET_READ;
-
-		ret = blinf->btr_ops->submit_block(nfi, blinf->btr_info, op, bl->bnr, bl->page);
+		if (test_bit(BL_DIRTY, &bl->bits))
+			ret = send_write_block(nfi, bl);
+		else
+			ret = send_get_block(nfi, bl);
 		BUG_ON(ret != 0);
 
 		submitted++;
@@ -623,9 +706,10 @@ static void queue_clean_work(struct ngnfs_block_info *blinf)
 
 /*
  * The clean work's only job is to walk the clean list and remove blocks
- * whose write IO has completed.  We defer this after end_io so that we
- * can put sync waiters in the flush->clean list and wake them once all
- * the write IO they're waiting for is complete.
+ * whose write IO has completed.  We defer this until after (possibly
+ * out of order) io completion so that we can put sync waiters in the
+ * flush->clean list and wake them once all the write IO they're waiting
+ * for is complete.
  */
 static void ngnfs_block_clean_work(struct work_struct *work)
 {
@@ -822,11 +906,13 @@ int ngnfs_block_sync(struct ngnfs_fs_info *nfi)
 	return sync_waiters_dec_error(blinf);
 }
 
-int ngnfs_block_setup(struct ngnfs_fs_info *nfi, struct ngnfs_block_transport_ops *btr_ops,
-		      void *btr_setup_arg)
+int ngnfs_block_setup(struct ngnfs_fs_info *nfi, int queue_depth)
 {
 	struct ngnfs_block_info *blinf;
 	int ret;
+
+	if (WARN_ON_ONCE(queue_depth < 1))
+		return -EINVAL;
 
 	blinf = kzalloc(sizeof(struct ngnfs_block_info), GFP_KERNEL);
 	if (!blinf) {
@@ -835,6 +921,7 @@ int ngnfs_block_setup(struct ngnfs_fs_info *nfi, struct ngnfs_block_transport_op
 	}
 
 	blinf->nfi = nfi;
+	blinf->queue_depth = queue_depth;
 	atomic_set(&blinf->nr_dirty, 0);
 	atomic_set(&blinf->nr_flushing, 0);
 	atomic_set(&blinf->nr_submitted, 0);
@@ -842,7 +929,6 @@ int ngnfs_block_setup(struct ngnfs_fs_info *nfi, struct ngnfs_block_transport_op
 	init_block_work_list(&blinf->flush, ngnfs_block_flush_work);
 	init_block_work_list(&blinf->submit, ngnfs_block_submit_work);
 	init_block_work_list(&blinf->clean, ngnfs_block_clean_work);
-	blinf->btr_ops = btr_ops;
 	init_waitqueue_head(&blinf->waitq);
 
 	ret = rhashtable_init(&blinf->ht, &ngnfs_block_ht_params);
@@ -857,21 +943,19 @@ int ngnfs_block_setup(struct ngnfs_fs_info *nfi, struct ngnfs_block_transport_op
 		ret = -ENOMEM;
 		goto out_destroy;
 	}
+	ret = ngnfs_msg_register_recv(nfi, NGNFS_MSG_GET_BLOCK_RESULT, recv_get_block_result) ?:
+	      ngnfs_msg_register_recv(nfi, NGNFS_MSG_WRITE_BLOCK_RESULT, recv_write_block_result);
+	if (ret < 0)
+		goto out_destroy;
 
-	if (blinf->btr_ops->setup) {
-		blinf->btr_info = blinf->btr_ops->setup(nfi, btr_setup_arg);
-		if (IS_ERR(blinf->btr_info)) {
-			ret = PTR_ERR(blinf->btr_info);
-			goto out_destroy;
-		}
-	}
-
-	blinf->queue_depth = blinf->btr_ops->queue_depth(nfi, blinf->btr_info);
 	nfi->block_info = blinf;
 	ret = 0;
 	goto out;
 
 out_destroy:
+	/* fine to call these if they aren't registered */
+	ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_GET_BLOCK_RESULT, recv_get_block_result);
+	ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_WRITE_BLOCK_RESULT, recv_write_block_result);
 	destroy_block_work_list(&blinf->flush);
 	destroy_block_work_list(&blinf->submit);
 	destroy_block_work_list(&blinf->clean);
@@ -903,16 +987,16 @@ void ngnfs_block_destroy(struct ngnfs_fs_info *nfi)
 	struct ngnfs_block_info *blinf = nfi->block_info;
 
 	if (blinf) {
-		if (blinf->btr_ops->shutdown)
-			blinf->btr_ops->shutdown(nfi, blinf->btr_info);
+		ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_GET_BLOCK_RESULT,
+					  recv_get_block_result);
+		ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_WRITE_BLOCK_RESULT,
+					  recv_write_block_result);
 
 		/* any queued work is drained before destruction */
 		destroy_block_work_list(&blinf->flush);
 		destroy_block_work_list(&blinf->submit);
 		destroy_block_work_list(&blinf->clean);
 
-		if (blinf->btr_ops->destroy)
-			blinf->btr_ops->destroy(nfi, blinf->btr_info);
 		rhashtable_free_and_destroy(&blinf->ht, free_ht_block, blinf);
 		kfree(blinf);
 		nfi->block_info = NULL;

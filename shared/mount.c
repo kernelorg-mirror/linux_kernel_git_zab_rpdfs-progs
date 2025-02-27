@@ -21,7 +21,6 @@
 #include "shared/lk/types.h"
 
 #include "shared/block.h"
-#include "shared/btr-msg.h"
 #include "shared/log.h"
 #include "shared/manifest.h"
 #include "shared/mount.h"
@@ -117,7 +116,7 @@ int ngnfs_mount(struct ngnfs_fs_info *nfi, int argc, char **argv)
 
 	ret = ngnfs_manifest_setup(nfi, &opts.addr_list, opts.nr_addrs) ?:
 	      ngnfs_msg_setup(nfi, &ngnfs_mtr_socket_ops, NULL, NULL) ?:
-	      ngnfs_block_setup(nfi, &ngnfs_btr_msg_ops, NULL);
+	      ngnfs_block_setup(nfi, 32 /* XXX shrug */);
 	if (ret < 0)
 		ngnfs_unmount(nfi);
 

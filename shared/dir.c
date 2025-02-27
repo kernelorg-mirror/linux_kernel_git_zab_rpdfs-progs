@@ -77,7 +77,7 @@ static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len
 			     mode_t mode)
 {
 	da->hash = name_hash(name, name_len);
-	da->dent_size = sizeof(struct ngnfs_dirent) + name_len;
+	da->dent_size = offsetof(struct ngnfs_dirent, name) + name_len;
 	da->mode = mode;
 
 	da->dent.ino = cpu_to_le64(ino);

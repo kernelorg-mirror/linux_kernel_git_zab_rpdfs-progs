@@ -4,6 +4,9 @@
 
 #include "shared/urcu.h"
 
-#define cpu_relax	caa_cpu_relax
+static inline void cpu_relax(void)
+{
+	caa_cpu_relax();
+}
 
 #endif

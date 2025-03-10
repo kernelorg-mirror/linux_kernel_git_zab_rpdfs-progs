@@ -30,6 +30,9 @@ void *rhashtable_lookup(struct rhashtable *ht, const void *key,
 			const struct rhashtable_params params);
 void *rhashtable_lookup_get_insert_fast(struct rhashtable *ht, struct rhash_head *head,
 					const struct rhashtable_params params);
+int rhashtable_remove_fast(struct rhashtable *ht, struct rhash_head *head,
+			   const struct rhashtable_params params);
+
 
 int rhashtable_init(struct rhashtable *ht, const struct rhashtable_params *params);
 void rhashtable_free_and_destroy(struct rhashtable *ht,

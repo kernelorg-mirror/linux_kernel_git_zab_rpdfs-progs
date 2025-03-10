@@ -102,6 +102,17 @@ void *rhashtable_lookup_get_insert_fast(struct rhashtable *ht, struct rhash_head
 }
 
 /*
+ * This acquires the rcu_read_lock, the caller doesn't need to.
+ */
+int rhashtable_remove_fast(struct rhashtable *ht, struct rhash_head *head,
+			   const struct rhashtable_params params)
+{
+	struct cds_lfht_node *node = head_to_node(head);
+
+	return cds_lfht_del(ht->lfht, node);
+}
+
+/*
  * XXX starting with simple fixed size for now.
  */
 #define RHT_BUCKETS 1024

@@ -30,9 +30,6 @@ LIB_SRC := $(foreach d,$(LIB_DIR),$(wildcard $(d)/*.c))
 LIB_OBJ := $(patsubst %.c,%.o,$(LIB_SRC))
 LIB_DEP := $(foreach d,$(LIB_DIR),$(wildcard $(d)/*.d))
 
-# binary names have ngnfs- prefixed
-#binname = $(dir $1)ngnfs-$(notdir $1)
-
 #
 # check persistent fixed header structs for internal padding with
 # specific minimal compilation that avoids pulling in lots of header
@@ -54,8 +51,6 @@ $(BIN): %: %.o 	$$(filter $$(dir %)$$(PERCENT),$$(OBJ)) \
 		$$(filter shared/$$(PERCENT),$$(OBJ)) \
 		$$(filter shared/lk/$$(PERCENT),$$(OBJ))
 	gcc $(LDFLAGS) -o $@ $^
-
-#	gcc $(LDFLAGS) -o $(call binname,$@) $^
 
 %.o %.d: %.c $(DGH) Makefile
 	gcc $(CFLAGS) -MD -MP -MF $*.d -c $< -o $*.o

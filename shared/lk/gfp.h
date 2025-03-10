@@ -17,7 +17,7 @@
 #define PAGE_SIZE	(1 << PAGE_SHIFT)
 
 struct page {
-	unsigned long refcount;
+	int refcount;
 	void *buf;
 };
 
@@ -60,6 +60,11 @@ static inline void put_page(struct page *page)
 static inline void *page_address(struct page *page)
 {
 	return page->buf;
+}
+
+static inline int page_ref_count(struct page *page)
+{
+	return uatomic_read(&page->refcount);
 }
 
 #endif

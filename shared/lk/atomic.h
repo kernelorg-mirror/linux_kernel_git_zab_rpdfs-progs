@@ -87,6 +87,20 @@ static inline bool PREFIX##inc_unless_negative(ATOMIC *v)		\
 	} while ((read = PREFIX##cmpxchg(v, old, old + 1)) != old);	\
 									\
 	return true;							\
+}									\
+									\
+static inline bool PREFIX##add_unless(ATOMIC *v, TYPE a, TYPE u)	\
+{									\
+	TYPE read = PREFIX##read(v);					\
+	TYPE old;							\
+									\
+	do {								\
+		if (read == u)						\
+			return false;					\
+		old = read;             				\
+	} while ((read = PREFIX##cmpxchg(v, old, old + a)) != old);	\
+									\
+	return true;							\
 }
 
 #define gen_atomics(SEP, TYPE) \

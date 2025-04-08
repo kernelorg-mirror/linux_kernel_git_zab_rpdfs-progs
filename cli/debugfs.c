@@ -216,6 +216,7 @@ static void debugfs_thread(struct thread *thr, void *arg)
 	char **line_argv = NULL;
 	char *line = NULL;
 	int ret;
+	bool is_tty = isatty(STDIN_FILENO);
 
 	line = malloc(LINE_SIZE);
 	line_argv = calloc(MAX_ARGC, sizeof(line_argv[0]));
@@ -232,6 +233,14 @@ static void debugfs_thread(struct thread *thr, void *arg)
 		fflush(stdout);
 		if (!fgets(line, LINE_SIZE, stdin))
 			break;
+
+		/*
+		 * Copy the entire line (with \n at the end) back to the output if
+		 * we're reading from a pipe. This makes the output readable like a
+		 * full log of what commands were performed.
+		 */
+		if (!is_tty)
+			fprintf(stdout, "%s", line);
 
 		parse_command(ctx, line, line_argv);
 

@@ -2,6 +2,8 @@
 #ifndef _LINUX_MATH_H
 #define _LINUX_MATH_H
 
+#include "shared/lk/div64.h"
+
 /*
  * This looks more complex than it should be. But we need to
  * get the type for the ~ right in round_down (it needs to be

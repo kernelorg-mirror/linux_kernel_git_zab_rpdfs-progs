@@ -8,3 +8,5 @@ utask/utask_gen_defs.h
 cli/ngnfs-cli
 devd/ngnfs-devd
 lib/libngnfs.a
+shared/lk/gen/gen_crc64table
+shared/lk/crc64table.h

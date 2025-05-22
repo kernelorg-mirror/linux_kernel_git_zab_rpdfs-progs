@@ -42,8 +42,13 @@ LIB_DEP := $(foreach d,$(LIB_DIR),$(wildcard $(d)/*.d))
 #
 PADCHECK := $(patsubst %.h,%.o.padcheck,$(wildcard shared/format-*.h))
 
+#
+# We have some standalone binaries that generate source.
+#
+GEN_BIN := $(patsubst %.c,%,$(wildcard shared/lk/gen/*.c))
+
 .PHONY: all
-all: $(PADCHECK) $(BIN) $(DGH) $(LIB)
+all: $(PADCHECK) $(GEN_BIN) $(BIN) $(DGH) $(LIB)
 
 ifneq ($(DEP),)
 -include $(DEP)
@@ -57,6 +62,9 @@ $(BIN): %: %.o 	$$(filter $$(dir %)$$(PERCENT),$$(OBJ)) \
 		$$(filter shared/lk/$$(PERCENT),$$(OBJ)) \
 		$$(filter utask/$$(PERCENT),$$(OBJ) $$(OBJ_S))
 	gcc $(LDFLAGS) -o $@ $^
+
+$(GEN_BIN): %: %.c
+	gcc $(LDFLAGS) -o $@ $<
 
 %.o %.d: %.c $(DGH)
 	gcc $(CFLAGS) -MD -MP -MF $*.d -c $< -o $*.o
@@ -83,13 +91,16 @@ $(PADCHECK): %.o.padcheck: %.h
 $(DGH): scripts/generate-trace-events.awk shared/trace-events.txt
 	gawk -f $< < shared/trace-events.txt > $@
 
+shared/lk/crc64table.h: shared/lk/gen/gen_crc64table
+	$^ > $@
+
 $(LIB): $(LIB_OBJ)
 	ar rcs $@ $(LIB_OBJ)
 	ranlib $@
 
 .PHONY: clean
 clean:
-	@rm -f $(BIN) $(OBJ) $(OBJ_S) $(DEP) $(PADCHECK) $(DGH) $(LIB)\
+	@rm -f $(BIN) $(OBJ) $(OBJ_S) $(DEP) $(PADCHECK) $(GEN_BIN) $(DGH) $(LIB)\
 		$(foreach d,$(DIR),$(wildcard $(d)/*.[is])) \
 		utask/utask_gen_defs.h \
 		.sparse.gcc-defines.h .sparse.output

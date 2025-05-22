@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0
 
+# make every target depend on the makefile
+.EXTRA_PREREQS:= $(abspath $(lastword $(MAKEFILE_LIST)))
+
 CFLAGS := -I. -O2 -ggdb -Wall -Werror -D_FILE_OFFSET_BITS=64 -msse4.2 -fno-strict-aliasing -fno-omit-frame-pointer
 
 # function entrance/exit profiling for uftrace
@@ -55,7 +58,7 @@ $(BIN): %: %.o 	$$(filter $$(dir %)$$(PERCENT),$$(OBJ)) \
 		$$(filter utask/$$(PERCENT),$$(OBJ) $$(OBJ_S))
 	gcc $(LDFLAGS) -o $@ $^
 
-%.o %.d: %.c $(DGH) Makefile
+%.o %.d: %.c $(DGH)
 	gcc $(CFLAGS) -MD -MP -MF $*.d -c $< -o $*.o
 	./scripts/sparse.sh -Wbitwise -D__CHECKER__ $(CFLAGS) $<
 
@@ -63,24 +66,24 @@ $(BIN): %: %.o 	$$(filter $$(dir %)$$(PERCENT),$$(OBJ)) \
 # The utask/asm building is a bit sloppy.  Half generic rules, but
 # explicit dependencies.
 #
-$(OBJ_S): %.o: %.S Makefile utask/utask_defs.h utask/utask_gen_defs.h
+$(OBJ_S): %.o: %.S utask/utask_defs.h utask/utask_gen_defs.h
 	gcc -c $< -o $*.o
 
 # specifically output compiled assembly so we can extract defines
-utask/utask.s: utask/utask.c Makefile
+utask/utask.s: utask/utask.c
 	gcc -I. -S -o ./utask/utask.s  ./utask/utask.c
 
 # extract defines from complied asm so we can include it from asm source
 utask/utask_gen_defs.h: utask/utask.s
 	grep '#define.*\<UTASK_ASM' utask/utask.s > utask/utask_gen_defs.h
 
-$(PADCHECK): %.o.padcheck: %.h Makefile
+$(PADCHECK): %.o.padcheck: %.h
 	gcc $(CFLAGS) -Wpadded -c $< -o $@
 
-$(DGH): scripts/generate-trace-events.awk shared/trace-events.txt Makefile
+$(DGH): scripts/generate-trace-events.awk shared/trace-events.txt
 	gawk -f $< < shared/trace-events.txt > $@
 
-$(LIB): $(LIB_OBJ) Makefile
+$(LIB): $(LIB_OBJ)
 	ar rcs $@ $(LIB_OBJ)
 	ranlib $@
 

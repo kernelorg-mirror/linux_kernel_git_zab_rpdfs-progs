@@ -249,10 +249,10 @@ static void push_stack(struct utask *tsk, void *ptr)
 }
 
 /*
- * Allocate and run a new utask.  If this returns success then the fn
- * will be called from the newly created utask.
+ * Allocate and run a new utask.  The new task will be idle and it's up
+ * to the caller to wake it.
  */
-int utask_create(utask_fn_t fn, void *data, struct utask **tsk_ret)
+int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret)
 {
 	struct utask *tsk = NULL;
 	unsigned long after;
@@ -291,13 +291,23 @@ int utask_create(utask_fn_t fn, void *data, struct utask **tsk_ret)
 	tsk->sp -= UTASK_SAVED_BYTES;
 	memset(tsk->sp, 0, UTASK_SAVED_BYTES);
 
-	utask_wake_task(tsk);
-
 	ret = 0;
 out:
 	if (ret < 0)
 		tsk = NULL;
 	*tsk_ret = tsk;
+	return ret;
+}
+
+/*
+ * Allocate and run a new utask.  If this returns success then the fn
+ * will be called from the newly created utask.
+ */
+int utask_create(utask_fn_t fn, void *data, struct utask **tsk_ret)
+{
+	int ret = utask_create_nowake(fn, data, tsk_ret);
+	if (ret == 0)
+		utask_wake_task(*tsk_ret);
 	return ret;
 }
 

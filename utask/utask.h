@@ -93,6 +93,7 @@ void utask_finish(void);
 int utask_run(void);
 
 int utask_create(utask_fn_t fn, void *data, struct utask **tsk_ret);
+int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret);
 void utask_destroy(struct utask *tsk);
 void utask_destroy_other(struct utask *tsk);
 void utask_init_wait_queue(struct utask_wait_queue *wq);

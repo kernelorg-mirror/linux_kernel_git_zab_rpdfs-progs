@@ -7,69 +7,78 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 
 #include "shared/lk/list.h"
 #include "shared/lk/rbtree.h"
 
+#include "shared/clist.h"
+#include "shared/devfd.h"
 #include "shared/format-block.h"
+#include "shared/hash_table.h"
 
 #include "utask/block.h"
 #include "utask/utask.h"
 
 /*
  * This provides a block cache on top of local storage for tasks in our
- * utask runtime, via IO managed by io_uring.
+ * utask runtime with IO managed by io_uring.
  *
- * There can only be one utask executing here at a time, letting us
- * avoid all the complexity of concurrent programming.  (Though as we
- * block the next utask can call in -- it's still re-entrant).
+ * The interface provided is relatively lowlevel.  Callers get
+ * references to blocks and can block waiting for IO, but there's no
+ * read/write exclusion.  That's entirely the responsibility of the
+ * caller.
  *
- * Interestingly, callers of this cache won't leave behind dirty blocks.
- * They're not making many incremental changes that need to have
- * writeback caching.  They're processing in large batches or are making
- * persistence promises before they can reply to network messages.
- *
- * XXX of course, the callers and interface don't implement this quite
- * yet.  It'll come oneline as we build out the atomic transactions in
- * the networking protocol and the block journaling layer in devd.
+ * Callers can create dirty blocks, which we record on a list, and then
+ * provide a call for writing all dirty blocks.  This mechanism is built
+ * for the particular needs of the only devd user.  It's making block
+ * changes persistent before sending responses to requests.  Dirty
+ * blocks are short lived.
  */
 
 static struct block_cache_instance {
-	struct rb_root block_root;
+	struct hash_table *cache_ht;
 	struct list_head submit_list;
-	struct list_head lru_list;
+	struct counted_list_head hot_fifo;
+	struct counted_list_head cold_fifo;
+	struct list_head dirty_list;
 	struct utask *submit_tsk;
 	struct utask_wait_queue submit_wq;
-	struct utask *shrink_tsk;
-	struct utask_wait_queue shrink_wq;
-	unsigned long nr_allocated;
+	struct utask_wait_queue write_wq;
+	u64 total_blocks;
+	unsigned long nr_hashed;
+	unsigned long nr_dirty;
+	unsigned long nr_dirty_submitted;
 	unsigned long nr_in_flight;
 	unsigned long queue_depth;
+	int write_err;
 	int dev_fd;
 
 } global_block_cache_inst = {
-	.block_root = RB_ROOT,
 	.submit_list = LIST_HEAD_INIT(global_block_cache_inst.submit_list),
-	.lru_list = LIST_HEAD_INIT(global_block_cache_inst.lru_list),
+	.hot_fifo.head = LIST_HEAD_INIT(global_block_cache_inst.hot_fifo.head),
+	.cold_fifo.head = LIST_HEAD_INIT(global_block_cache_inst.cold_fifo.head),
+	.dirty_list = LIST_HEAD_INIT(global_block_cache_inst.dirty_list),
 	.submit_wq = INIT_UTASK_WAIT_QUEUE(global_block_cache_inst.submit_wq),
-	.shrink_wq = INIT_UTASK_WAIT_QUEUE(global_block_cache_inst.shrink_wq),
+	.write_wq = INIT_UTASK_WAIT_QUEUE(global_block_cache_inst.write_wq),
 	.dev_fd = -1,
 };
 
 struct cached_block {
-	struct rb_node node;
 	struct list_head submit_head;
-	struct list_head lru_head;
+	struct list_head fifo_head;
+	struct list_head dirty_head;
 	struct utask_wait_queue wq;
 	struct utask_cqe_callback cb;
 	struct page *data_page;
 	u64 bnr;
-	unsigned long readers;
+	long refcount;
 	int error;
-	unsigned uptodate:1,
-		 flushing:1,
+	unsigned accessed:1,
+		 hashed:1,
 		 queued:1,
-		 writer:1;
+		 uptodate:1,
+		 dirty:1;
 };
 
 static struct cached_block *alloc_cblk(struct block_cache_instance *inst)
@@ -83,30 +92,61 @@ static struct cached_block *alloc_cblk(struct block_cache_instance *inst)
 	}
 
 	INIT_LIST_HEAD(&cblk->submit_head);
-	INIT_LIST_HEAD(&cblk->lru_head);
+	INIT_LIST_HEAD(&cblk->fifo_head);
+	INIT_LIST_HEAD(&cblk->dirty_head);
 	utask_init_wait_queue(&cblk->wq);
-
-	inst->nr_allocated++;
+	cblk->refcount = 1;
 
 	return cblk;
 }
 
-static void free_cblk(struct block_cache_instance *inst, struct cached_block *cblk)
+static void free_cblk(struct cached_block *cblk)
 {
-	if (!RB_EMPTY_NODE(&cblk->node))
-		rb_erase(&cblk->node, &inst->block_root);
-	if (!list_empty(&cblk->submit_head))
-		list_del_init(&cblk->submit_head);
-	if (!list_empty(&cblk->lru_head))
-		list_del_init(&cblk->lru_head);
-
-	BUG_ON(utask_waitqueue_active(&cblk->wq));
+	WARN_ON_ONCE(cblk->refcount != 0);
+	WARN_ON_ONCE(cblk->hashed != 0);
+	WARN_ON_ONCE(!list_empty(&cblk->submit_head));
+	WARN_ON_ONCE(!list_empty(&cblk->fifo_head));
+	WARN_ON_ONCE(!list_empty(&cblk->dirty_head));
+	WARN_ON_ONCE(utask_waitqueue_active(&cblk->wq));
 
 	__free_page(cblk->data_page);
 	free(cblk);
+}
 
-	inst->nr_allocated--;
+static void get_cblk(struct cached_block *cblk)
+{
+	BUG_ON(cblk->refcount < 1);
+	BUG_ON(cblk->refcount == LONG_MAX);
+	cblk->refcount++;
+}
 
+static void put_cblk(struct cached_block *cblk)
+{
+	BUG_ON(cblk->refcount < 1);
+
+	if (--cblk->refcount == 0)
+		free_cblk(cblk);
+}
+
+static struct cached_block *del_first_pool_block(struct list_head *pool)
+{
+	struct cached_block *cblk;
+
+	cblk = list_first_entry_or_null(pool, struct cached_block, fifo_head);
+	if (cblk)
+		list_del_init(&cblk->fifo_head);
+
+	return cblk;
+}
+
+static void unhash_cblk(struct block_cache_instance *inst, struct cached_block *cblk)
+{
+	if (cblk->hashed) {
+		htable_delete(inst->cache_ht, cblk->bnr);
+		cblk->hashed = 0;
+		inst->nr_hashed--;
+		put_cblk(cblk);
+	}
 }
 
 /*
@@ -115,110 +155,98 @@ static void free_cblk(struct block_cache_instance *inst, struct cached_block *cb
  * amounts of memory and a handful of processes.
  */
 #define MAX_CACHED_BLOCKS	(256 * 1024 * 1024 / NGNFS_BLOCK_SIZE)
-static bool should_shrink(struct block_cache_instance *inst)
-{
-	return inst->nr_allocated > MAX_CACHED_BLOCKS && !list_empty(&inst->lru_list);
-}
+#define HOT_FIFO_PCT		10
+#define COLD_FIFO_PCT		(100 - HOT_FIFO_PCT)
 
-static void shrink_utask(void *data)
+static struct cached_block *clist_del_first_past_pct(struct block_cache_instance *inst,
+						     struct counted_list_head *clist,
+						     unsigned long pct)
 {
-	struct block_cache_instance *inst = data;
 	struct cached_block *cblk;
-	struct cached_block *tmp;
 
-	for (;;) {
-		utask_wait_event(&inst->shrink_wq, should_shrink(inst));
+	if ((clist->count * 100 / MAX_CACHED_BLOCKS) < pct)
+		return NULL;
 
-		list_for_each_entry_safe(cblk, tmp, &inst->lru_list, lru_head) {
-			if (inst->nr_allocated < MAX_CACHED_BLOCKS)
-				break;
+	cblk = list_first_entry_or_null(&clist->head, struct cached_block, fifo_head);
+	if (cblk)
+		clist_del_init(&cblk->fifo_head, clist);
+	return cblk;
+}
 
-			free_cblk(inst, cblk);
+/*
+ * Try and shrink the cache.  Blocks have a single accessed bit that's
+ * set as they're looked up in the hash table.  New blocks are added to
+ * a small hot fifo.  If they're accessed as they're removed from either
+ * fifo, they're added to the cold fifo.  If they're not accessed as
+ * they leave either fifo then they're freed.
+ *
+ * See: Yang, Juncheng; Qiu, Ziyue; Zhang, Yazhuo; Yue, Yao; Rashmi, K.
+ * V. (22 June 2023). "FIFO can be Better than LRU: The Power of Lazy
+ * Promotion and Quick Demotion"
+ *
+ * This is what they'd call qd-lp-clock1, I think.  We could add more
+ * accessed bits.
+ */
+static void try_shrink(struct block_cache_instance *inst)
+{
+	struct cached_block *cblk;
+
+	while ((cblk = clist_del_first_past_pct(inst, &inst->hot_fifo, HOT_FIFO_PCT) ?:
+		       clist_del_first_past_pct(inst, &inst->cold_fifo, COLD_FIFO_PCT))) {
+
+		if (cblk->accessed) {
+			clist_add_tail(&cblk->fifo_head, &inst->cold_fifo);
+			cblk->accessed = 0;
+		} else {
+			put_cblk(cblk);
+			unhash_cblk(inst, cblk);
 		}
 	}
 }
 
-/*
- * We only put blocks that aren't actively in use on the LRU.
- */
-static void update_lru(struct block_cache_instance *inst, struct cached_block *cblk)
+static struct cached_block *lookup_cblk(struct block_cache_instance *inst, u64 bnr)
 {
-	bool on_lru = !list_empty(&cblk->lru_head);
-	bool idle = !utask_waitqueue_active(&cblk->wq) && cblk->readers == 0 && !cblk->writer &&
-		    !cblk->queued;
+	struct cached_block *cblk;
 
-	if (idle && !on_lru)
-		list_add_tail(&cblk->lru_head, &inst->lru_list);
-	else if (!idle && on_lru)
-		list_del_init(&cblk->lru_head);
+	if (WARN_ON_ONCE(bnr >= inst->total_blocks))
+		return NULL;
 
-	if (should_shrink(inst))
-		utask_wake_task(inst->shrink_tsk);
-}
-
-/*
- * Acquire a read or write reference to a cached block.  While we have a
- * reference the block will not be found on the LRU and won't be freed.
- * A successfully returned reference must be released with block_put().
- */
-enum {
-	GCB_ALLOC = (1 << 0),
-	GCB_WRITER = (1 << 1),
-};
-static struct cached_block *get_cblk(struct block_cache_instance *inst, u64 bnr, int gcb)
-{
-	struct rb_node **node = &inst->block_root.rb_node;
-	struct cached_block *cblk = NULL;
-	struct rb_node *parent = NULL;
-
-	while (*node) {
-		parent = *node;
-		cblk = container_of(*node, struct cached_block, node);
-		if (bnr == cblk->bnr)
-			break;
-		if (bnr < cblk->bnr)
-			node = &(*node)->rb_left;
-		else
-			node = &(*node)->rb_right;
-		cblk = NULL;
-	}
-
-	if (!cblk && (gcb & GCB_ALLOC)) {
-		cblk = alloc_cblk(inst);
-		if (cblk) {
-			cblk->bnr = bnr;
-
-			rb_link_node(&cblk->node, parent, node);
-			rb_insert_color(&cblk->node, &inst->block_root);
-		}
-	}
-
+	cblk = (struct cached_block *)htable_lookup(inst->cache_ht, bnr);
 	if (cblk) {
-		utask_wait_event(&cblk->wq,
-			         !cblk->writer && (!(gcb & GCB_WRITER) || !cblk->readers));
-		if (gcb & GCB_WRITER)
-			cblk->writer = 1;
-		else
-			cblk->readers++;
-
-		update_lru(inst, cblk);
+		cblk->accessed = 1;
+		get_cblk(cblk);
 	}
 
 	return cblk;
 }
 
-static void put_cblk(struct block_cache_instance *inst, struct cached_block *cblk)
+static struct cached_block *lookup_or_alloc_cblk(struct block_cache_instance *inst,
+						 struct list_head *pool, u64 bnr)
 {
-	if (cblk) {
-		/* XXX not thrilled with this.. but.. */
-		if (cblk->writer)
-			cblk->writer = 0;
-		else
-			cblk->readers--;
+	struct cached_block *cblk;
 
-		update_lru(inst, cblk);
-		utask_wake_all(&cblk->wq);
+	cblk = lookup_cblk(inst, bnr);
+	if (!cblk) {
+		if (pool)
+			cblk = del_first_pool_block(pool);
+		else
+			cblk = alloc_cblk(inst);
+		if (cblk) {
+			cblk->bnr = bnr;
+			cblk->hashed = 1;
+
+			htable_insert(inst->cache_ht, bnr, (u64)cblk);
+			inst->nr_hashed++;
+			get_cblk(cblk);
+
+			clist_add_tail(&cblk->fifo_head, &inst->hot_fifo);
+			get_cblk(cblk);
+
+			try_shrink(inst);
+		}
 	}
+
+	return cblk;
 }
 
 static bool should_submit(struct block_cache_instance *inst)
@@ -242,16 +270,18 @@ static void io_completion(struct io_uring_cqe *cqe, struct utask_cqe_callback *c
 	BUG_ON(cqe->res != NGNFS_BLOCK_SIZE);
 	err = 0;
 
-	if (cblk->flushing)
-		cblk->flushing = 0;
-	else if (!err)
+	if (cblk->dirty) {
+		if (--inst->nr_dirty_submitted <= 0)
+			utask_wake_all(&inst->write_wq);
+	} else {
 		cblk->uptodate = 1;
+		utask_wake_all(&cblk->wq);
+	}
 
 	cblk->queued = 0;
 	cblk->error = err;
-
-	update_lru(inst, cblk);
-	utask_wake_all(&cblk->wq);
+	put_cblk(cblk); /* submit list ref that covered io */
+	cblk = NULL;
 
 	inst->nr_in_flight--;
 	if (should_submit(inst))
@@ -286,7 +316,7 @@ static void submit_utask(void *data)
 				break;
 
 			utask_set_sqe_callback(sqe, &cblk->cb, io_completion);
-			if (cblk->flushing)
+			if (cblk->dirty)
 				io_uring_prep_write(sqe, inst->dev_fd,
 						    page_address(cblk->data_page),
 						    NGNFS_BLOCK_SIZE,
@@ -299,27 +329,58 @@ static void submit_utask(void *data)
 
 			inst->nr_in_flight++;
 			list_del_init(&cblk->submit_head);
+			/* submit list ref is transferred to io, put at completion */
 		}
 	}
 }
 
-/*
- * Return once the block is uptodate or has an error.  It's queued if it
- * wasn't already.
- */
-static int queue_and_wait_for_uptodate(struct block_cache_instance *inst,
-				       struct cached_block *cblk)
+static void queue_unless_uptodate(struct block_cache_instance *inst, struct cached_block *cblk)
 {
 	if (!cblk->error && !cblk->uptodate && !cblk->queued) {
 		list_add_tail(&cblk->submit_head, &inst->submit_list);
+		get_cblk(cblk);
 		cblk->queued = 1;
 		if (should_submit(inst))
 			utask_wake_task(inst->submit_tsk);
 	}
+}
 
-	utask_wait_event(&cblk->wq, cblk->uptodate || cblk->error);
+int block_alloc_pool(struct list_head *pool, size_t nr)
+{
+	struct block_cache_instance *inst = &global_block_cache_inst;
+	struct cached_block *cblk;
+	int ret = 0;
 
-	return cblk->error;
+	while (nr--) {
+		cblk = alloc_cblk(inst);
+		if (!cblk) {
+			ret = -ENOMEM;
+			break;
+		}
+		list_add_tail(&cblk->fifo_head, pool);
+	}
+
+	if (ret < 0)
+		block_free_pool(pool);
+
+	return ret;
+}
+
+void block_free_pool(struct list_head *pool)
+{
+	struct cached_block *cblk;
+
+	while ((cblk = del_first_pool_block(pool)))
+		put_cblk(cblk);
+}
+
+int block_lookup(u64 bnr, struct cached_block **cblk_ret)
+{
+	struct block_cache_instance *inst = &global_block_cache_inst;
+
+	*cblk_ret = lookup_cblk(inst, bnr);
+
+	return *cblk_ret ? 0 : -ENOENT;
 }
 
 int block_read(u64 bnr, struct cached_block **cblk_ret)
@@ -328,16 +389,18 @@ int block_read(u64 bnr, struct cached_block **cblk_ret)
 	struct cached_block *cblk;
 	int ret;
 
-	cblk = get_cblk(inst, bnr, GCB_ALLOC);
+	cblk = lookup_or_alloc_cblk(inst, NULL, bnr);
 	if (!cblk) {
 		ret = -ENOMEM;
 		goto out;
 	}
 
-	ret = queue_and_wait_for_uptodate(inst, cblk);
+	queue_unless_uptodate(inst, cblk);
+	utask_wait_event(&cblk->wq, cblk->uptodate || cblk->error);
+	ret = cblk->error;
 out:
-	if (ret < 0) {
-		put_cblk(inst, cblk);
+	if (ret < 0 && cblk) {
+		put_cblk(cblk);
 		cblk = NULL;
 	}
 
@@ -346,49 +409,48 @@ out:
 }
 
 /*
- * Return a write reference to block after reading its current contents.
+ * Submit a read for the given block if it could be read, but don't
+ * block waiting for it.  Does nothing if there's already a block that's
+ * already uptodate or has been submitted for reading.
  */
-int block_modify(u64 bnr, struct cached_block **cblk_ret)
+void block_readahead(u64 bnr)
 {
 	struct block_cache_instance *inst = &global_block_cache_inst;
 	struct cached_block *cblk;
-	int ret;
 
-	cblk = get_cblk(inst, bnr, GCB_ALLOC | GCB_WRITER);
-	if (!cblk) {
-		ret = -ENOMEM;
-		goto out;
+	cblk = lookup_or_alloc_cblk(inst, NULL, bnr);
+	if (cblk) {
+		queue_unless_uptodate(inst, cblk);
+		put_cblk(cblk);
 	}
-
-	ret = queue_and_wait_for_uptodate(inst, cblk);
-	if (ret == 0)
-		utask_wait_event(&cblk->wq, !cblk->flushing);
-out:
-	if (ret < 0) {
-		put_cblk(inst, cblk);
-		cblk = NULL;
-	}
-
-	*cblk_ret = cblk;
-	return ret;
 }
 
 /*
- * Return a write reference to block regardless of its current contents.
+ * Return a reference to a dirty block.  If the caller doesn't provide a
+ * data_page then the contents are unknown.  If an existing block
+ * doesn't exist then a new block is allocated from the pool.
+ *
+ * If an existing block isn't already dirty then we don't want to modify
+ * it under the caller.  We unhash it, leaving the caller's reference
+ * intact, and try to allocate a new block to insert in its place.
  */
-int block_overwrite(u64 bnr, struct page *data_page, struct cached_block **cblk_ret)
+int block_create_dirty(u64 bnr, struct list_head *pool, struct page *data_page,
+		       struct cached_block **cblk_ret)
 {
 	struct block_cache_instance *inst = &global_block_cache_inst;
 	struct cached_block *cblk;
 	int ret;
 
-	cblk = get_cblk(inst, bnr, GCB_ALLOC | GCB_WRITER);
+	cblk = lookup_or_alloc_cblk(inst, pool, bnr);
+	if (cblk && cblk->hashed && (cblk->uptodate || cblk->queued) && !cblk->dirty) {
+		unhash_cblk(inst, cblk);
+		put_cblk(cblk);
+		cblk = lookup_or_alloc_cblk(inst, pool, bnr);
+	}
 	if (!cblk) {
 		ret = -ENOMEM;
 		goto out;
 	}
-
-	utask_wait_event(&cblk->wq, !cblk->flushing);
 
 	if (data_page) {
 		if (cblk->data_page)
@@ -397,13 +459,20 @@ int block_overwrite(u64 bnr, struct page *data_page, struct cached_block **cblk_
 		get_page(cblk->data_page);
 	}
 
-	cblk->uptodate = 1;
-	cblk->error = 0;
+	if (!cblk->dirty) {
+		cblk->uptodate = 1;
+		cblk->dirty = 1;
+		cblk->error = 0;
+
+		list_add_tail(&cblk->dirty_head, &inst->dirty_list);
+		get_cblk(cblk);
+		inst->nr_dirty++;
+	}
 
 	ret = 0;
 out:
-	if (ret < 0) {
-		put_cblk(inst, cblk);
+	if (ret < 0 && cblk) {
+		put_cblk(cblk);
 		cblk = NULL;
 	}
 
@@ -412,25 +481,62 @@ out:
 }
 
 /*
- * An interim measure until we get shared transactions that track blocks
- * that need to be written.  The block is only "flushing" from when we
- * start IO to when it completes.  The caller must have a write ref.
+ * Try and write all dirty blocks.  Returns once all submitted write IOs
+ * are complete.
+ *
+ * The caller is responsible for ensuring that there is only ever one
+ * caller at a time.
  */
-int block_flush(struct cached_block *cblk)
+int block_write_all_dirty(void)
 {
 	struct block_cache_instance *inst = &global_block_cache_inst;
+	struct cached_block *cblk;
 
-	utask_wait_event(&cblk->wq, !cblk->flushing && !cblk->queued);
+	inst->write_err = 0;
+	list_for_each_entry(cblk, &inst->dirty_list, dirty_head) {
+		list_add_tail(&cblk->submit_head, &inst->submit_list);
+		cblk->queued = 1;
+		get_cblk(cblk);
+	}
+	inst->nr_dirty_submitted += inst->nr_dirty;
 
-	cblk->flushing = 1;
-	list_add_tail(&cblk->submit_head, &inst->submit_list);
-	cblk->queued = 1;
 	if (should_submit(inst))
 		utask_wake_task(inst->submit_tsk);
 
-	utask_wait_event(&cblk->wq, !cblk->flushing);
+	utask_wait_event(&inst->write_wq, inst->nr_dirty_submitted == 0);
 
-	return cblk->error;
+	return inst->write_err;
+}
+
+/*
+ * This is a separate call, instead of being done before
+ * _write_all_dirty_returns, so that the caller can rely on getting
+ * references to the pinned dirty blocks as they finish writing.  Once
+ * done they can clean all the dirty blocks and make them reclaimable.
+ */
+void block_clean_all_dirty(void)
+{
+	struct block_cache_instance *inst = &global_block_cache_inst;
+	struct cached_block *cblk;
+	struct cached_block *tmp;
+
+	list_for_each_entry_safe(cblk, tmp, &inst->dirty_list, dirty_head) {
+		list_del_init(&cblk->dirty_head);
+		cblk->dirty = 0;
+		put_cblk(cblk);
+	}
+	inst->nr_dirty = 0;
+}
+
+/*
+ * Make the block no longer present in the cache.  Active users can
+ * still have a reference to the block.  The last put will free it.
+ */
+void block_invalidate(struct cached_block *cblk)
+{
+	struct block_cache_instance *inst = &global_block_cache_inst;
+
+	unhash_cblk(inst, cblk);
 }
 
 void *block_data_buf(struct cached_block *cblk)
@@ -445,52 +551,70 @@ struct page *block_data_page(struct cached_block *cblk)
 
 void block_put(struct cached_block *cblk)
 {
+	if (cblk)
+		put_cblk(cblk);
+}
+
+/*
+ * A put that clears the pointer.
+ */
+void block_putp(struct cached_block **cblk)
+{
+	if (*cblk) {
+		put_cblk(*cblk);
+		*cblk = NULL;
+	}
+}
+
+u64 block_total_blocks(void)
+{
 	struct block_cache_instance *inst = &global_block_cache_inst;
 
-	if (cblk) {
-		/* XXX not thrilled with this assumption that these refs are ours */
-		if (cblk->writer)
-			cblk->writer = 0;
-		else
-			cblk->readers--;
-
-		update_lru(inst, cblk);
-		utask_wake_all(&cblk->wq);
-	}
+	return inst->total_blocks;
 }
 
 int block_init(char *dev_path, unsigned long queue_depth)
 {
 	struct block_cache_instance *inst = &global_block_cache_inst;
 	int oflags;
+	u64 size;
 	int ret;
-	int fd;
 
 	if (WARN_ON_ONCE(queue_depth == 0))
 		return -EINVAL;
 
 	oflags = O_RDWR | O_DIRECT;
-	fd = open(dev_path, oflags, O_RDWR);
-	if (fd < 0 && errno == EINVAL) {
+	inst->dev_fd = open(dev_path, oflags, O_RDWR);
+	if (inst->dev_fd < 0 && errno == EINVAL) {
 		oflags &= ~O_DIRECT;
 		errno = 0;
-		fd = open(dev_path, oflags, O_RDWR);
-		if (fd >= 0)
+		inst->dev_fd = open(dev_path, oflags, O_RDWR);
+		if (inst->dev_fd >= 0)
 			log("O_DIRECT not supported on '%s', using buffered", dev_path);
 	}
-	if (fd < 0) {
+	if (inst->dev_fd < 0) {
 		ret = -errno;
 		log("error opening device '%s' :" ENOF, dev_path, ENOA(-ret));
 		goto out;
 	}
 	inst->queue_depth = queue_depth;
-	inst->dev_fd = fd;
 
-	ret = utask_create(submit_utask, inst, &inst->submit_tsk) ?:
-	      utask_create(shrink_utask, inst, &inst->shrink_tsk);
+	ret = devfd_get_size(inst->dev_fd, &size);
+	if (ret < 0)
+		goto out;
+
+	inst->total_blocks = size / NGNFS_BLOCK_SIZE;
+
+	inst->cache_ht = htable_alloc(MAX_CACHED_BLOCKS);
+	if (!inst->cache_ht) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	ret = utask_create(submit_utask, inst, &inst->submit_tsk);
+out:
 	if (ret < 0)
 		block_exit();
-out:
 	return ret;
 }
 
@@ -498,23 +622,32 @@ void block_exit(void)
 {
 	struct block_cache_instance *inst = &global_block_cache_inst;
 	struct cached_block *cblk;
-	struct cached_block *tmp;
+	unsigned long fe;
 
 	/* stop submission and wait for ios to drain */
 	inst->queue_depth = 0;
 	utask_wait_event(&inst->submit_wq, inst->nr_in_flight == 0);
 
 	utask_destroy(inst->submit_tsk);
-	utask_destroy(inst->shrink_tsk);
-
-	if (inst->dev_fd >= 0)
-		close(inst->dev_fd);
-
-	rbtree_postorder_for_each_entry_safe(cblk, tmp, &inst->block_root, node)
-		free_cblk(inst, cblk);
-
-	inst->block_root = RB_ROOT;
 	inst->submit_tsk = NULL;
-	inst->shrink_tsk = NULL;
-	inst->dev_fd = -1;
+
+	if (inst->dev_fd >= 0) {
+		close(inst->dev_fd);
+		inst->dev_fd = -1;
+	}
+
+	block_clean_all_dirty();
+
+	while ((cblk = clist_del_first_past_pct(inst, &inst->hot_fifo, 0) ?:
+		       clist_del_first_past_pct(inst, &inst->cold_fifo, 0))) {
+		put_cblk(cblk);
+	}
+
+	if (inst->cache_ht) {
+		htable_foreach_init(inst->cache_ht, &fe);
+		while ((cblk = (struct cached_block *)htable_foreach(inst->cache_ht, &fe)))
+			unhash_cblk(inst, cblk);
+		free(inst->cache_ht);
+		inst->cache_ht = NULL;
+	}
 }

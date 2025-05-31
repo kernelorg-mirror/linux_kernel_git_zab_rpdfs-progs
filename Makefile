@@ -11,7 +11,7 @@ CFLAGS += -pg
 # produce .i and .s
 CFLAGS += -save-temps
 
-LDFLAGS := -Wl,--gc-sections -lurcu-common -lurcu -lurcu-cds -lxxhash -luring
+LDFLAGS := -Wl,--gc-sections -lurcu-common -lurcu -lurcu-cds -lxxhash -luring -luuid
 
 # provide dynamic symbol tables for backtrace()
 LDFLAGS += -rdynamic

@@ -8,7 +8,11 @@
 
 struct cached_block;
 
+typedef int (*block_verify_fn_t)(struct cached_block *cblk_ret, void *arg);
+
 int block_lookup(u64 bnr, struct cached_block **cblk_ret);
+int block_read_verify(u64 bnr, block_verify_fn_t verify_fn, void *verify_arg,
+		      struct cached_block **cblk_ret);
 int block_read(u64 bnr, struct cached_block **cblk_ret);
 void block_readahead(u64 bnr);
 void *block_data_buf(struct cached_block *cblk);

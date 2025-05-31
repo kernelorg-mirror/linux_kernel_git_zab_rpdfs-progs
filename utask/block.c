@@ -78,6 +78,7 @@ struct cached_block {
 		 hashed:1,
 		 queued:1,
 		 uptodate:1,
+		 verified:1,
 		 dirty:1;
 };
 
@@ -383,7 +384,8 @@ int block_lookup(u64 bnr, struct cached_block **cblk_ret)
 	return *cblk_ret ? 0 : -ENOENT;
 }
 
-int block_read(u64 bnr, struct cached_block **cblk_ret)
+int block_read_verify(u64 bnr, block_verify_fn_t verify_fn, void *verify_arg,
+		      struct cached_block **cblk_ret)
 {
 	struct block_cache_instance *inst = &global_block_cache_inst;
 	struct cached_block *cblk;
@@ -398,6 +400,19 @@ int block_read(u64 bnr, struct cached_block **cblk_ret)
 	queue_unless_uptodate(inst, cblk);
 	utask_wait_event(&cblk->wq, cblk->uptodate || cblk->error);
 	ret = cblk->error;
+	if (ret < 0)
+		goto out;
+
+	if (verify_fn && !cblk->verified) {
+		ret = verify_fn(cblk, verify_arg);
+		if (ret < 0) {
+			unhash_cblk(inst, cblk);
+			goto out;
+		}
+		cblk->verified = 1;
+	}
+
+	ret = 0;
 out:
 	if (ret < 0 && cblk) {
 		put_cblk(cblk);
@@ -406,6 +421,11 @@ out:
 
 	*cblk_ret = cblk;
 	return ret;
+}
+
+int block_read(u64 bnr, struct cached_block **cblk_ret)
+{
+	return block_read_verify(bnr, NULL, NULL, cblk_ret);
 }
 
 /*
@@ -461,6 +481,7 @@ int block_create_dirty(u64 bnr, struct list_head *pool, struct page *data_page,
 
 	if (!cblk->dirty) {
 		cblk->uptodate = 1;
+		cblk->verified = 1;
 		cblk->dirty = 1;
 		cblk->error = 0;
 

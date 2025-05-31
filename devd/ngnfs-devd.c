@@ -31,6 +31,7 @@
 #include "utask/net.h"
 #include "utask/utask.h"
 
+#include "devd/bstore.h"
 #include "devd/proc.h"
 
 struct devd_options {
@@ -94,8 +95,10 @@ int main(int argc, char **argv)
 	      net_register_recv(proc_recv) ?:
 	      net_listen(&opts.listen_addr) ?:
 	      block_init(opts.dev_path, BLOCK_QUEUE_DEPTH) ?:
+	      bstore_init() ?:
 	      utask_run();
 
+	bstore_exit();
 	block_exit();
 	utask_exit();
 out:

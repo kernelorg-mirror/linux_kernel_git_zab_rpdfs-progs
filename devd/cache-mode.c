@@ -15,10 +15,10 @@
 #include "shared/msg.h"
 #include "shared/string_wrappers.h"
 
-#include "utask/block.h"
 #include "utask/net.h"
 #include "utask/utask.h"
 
+#include "devd/bstore.h"
 #include "devd/cache-mode.h"
 
 /*
@@ -281,7 +281,7 @@ static int send_read_result(struct client_mode *cli, u64 bnr, u8 old_mode, u8 mo
 
 	if (old_mode == NGNFS_CACHE_MODE_NONE && mode != NGNFS_CACHE_MODE_NONE && !cli->no_data) {
 
-		err = block_read(bnr, &cblk);
+		err = bstore_read(bnr, &cblk);
 		if (err < 0) {
 			/* send error on read io error */
 			rr.mode = NGNFS_CACHE_MODE_NULL;

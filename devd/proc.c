@@ -14,11 +14,11 @@
 #include "shared/msg.h"
 #include "shared/string_wrappers.h"
 
-#include "utask/block.h"
 #include "utask/net.h"
 #include "utask/utask.h"
 
 #include "devd/cache-mode.h"
+#include "devd/bstore.h"
 #include "devd/proc.h"
 
 /*
@@ -75,14 +75,9 @@ static void block_write_utask(void *data)
 	struct ngnfs_msg_block_write_result wr;
 	const u64 bnr = le64_to_cpu(bw->bnr);
 	struct ngnfs_msg_header hdr;
-	struct cached_block *cblk;
 	int ret;
 
-	ret = block_overwrite(bnr, preq->data_page, &cblk);
-	if (ret == 0) {
-		ret = block_flush(cblk);
-		block_put(cblk);
-	}
+	ret = bstore_write(bnr, preq->data_page);
 	if (ret < 0)
 		goto send;
 

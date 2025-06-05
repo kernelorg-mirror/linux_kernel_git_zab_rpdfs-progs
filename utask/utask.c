@@ -75,7 +75,7 @@ struct utask {
  * pointer.  This asserts that it's only called within a valid utask by
  * checking a magic number in the struct at the masked stack address.
  */
-static inline struct utask *utask_current(void)
+struct utask *utask_current(void)
 {
 	struct utask *tsk;
 	unsigned long sp;

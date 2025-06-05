@@ -43,7 +43,7 @@ static struct block_cache_instance {
 	struct counted_list_head cold_fifo;
 	struct list_head dirty_list;
 	struct utask *submit_tsk;
-	struct utask_wait_queue submit_wq;
+	struct utask *exit_tsk;
 	struct utask_wait_queue write_wq;
 	u64 total_blocks;
 	unsigned long nr_hashed;
@@ -59,7 +59,6 @@ static struct block_cache_instance {
 	.hot_fifo.head = LIST_HEAD_INIT(global_block_cache_inst.hot_fifo.head),
 	.cold_fifo.head = LIST_HEAD_INIT(global_block_cache_inst.cold_fifo.head),
 	.dirty_list = LIST_HEAD_INIT(global_block_cache_inst.dirty_list),
-	.submit_wq = INIT_UTASK_WAIT_QUEUE(global_block_cache_inst.submit_wq),
 	.write_wq = INIT_UTASK_WAIT_QUEUE(global_block_cache_inst.write_wq),
 	.dev_fd = -1,
 };
@@ -289,8 +288,8 @@ static void io_completion(struct io_uring_cqe *cqe, struct utask_cqe_callback *c
 		utask_wake_task(inst->submit_tsk);
 
 	/* catch block_exit shutting down */
-	if (inst->queue_depth == 0 && inst->nr_in_flight == 0)
-		utask_wake_all(&inst->submit_wq);
+	if (inst->exit_tsk && inst->nr_in_flight == 0)
+		utask_wake_task(inst->exit_tsk);
 }
 
 /*
@@ -304,9 +303,12 @@ static void submit_utask(void *data)
 	struct io_uring_sqe *sqe;
 	struct cached_block *cblk;
 	struct cached_block *tmp;
+	int ret;
 
 	for (;;) {
-		utask_wait_event(&inst->submit_wq, should_submit(inst));
+		ret = utask_wait_event_task(should_submit(inst));
+		if (ret < 0)
+			break;
 
 		list_for_each_entry_safe(cblk, tmp, &inst->submit_list, submit_head) {
 			if (inst->nr_in_flight >= inst->queue_depth)
@@ -398,8 +400,9 @@ int block_read_verify(u64 bnr, block_verify_fn_t verify_fn, void *verify_arg,
 	}
 
 	queue_unless_uptodate(inst, cblk);
-	utask_wait_event(&cblk->wq, cblk->uptodate || cblk->error);
-	ret = cblk->error;
+	ret = utask_wait_event(&cblk->wq, cblk->uptodate || cblk->error);
+	if (ret == 0)
+		ret = cblk->error;
 	if (ret < 0)
 		goto out;
 
@@ -512,6 +515,7 @@ int block_write_all_dirty(void)
 {
 	struct block_cache_instance *inst = &global_block_cache_inst;
 	struct cached_block *cblk;
+	int ret;
 
 	inst->write_err = 0;
 	list_for_each_entry(cblk, &inst->dirty_list, dirty_head) {
@@ -524,9 +528,11 @@ int block_write_all_dirty(void)
 	if (should_submit(inst))
 		utask_wake_task(inst->submit_tsk);
 
-	utask_wait_event(&inst->write_wq, inst->nr_dirty_submitted == 0);
+	ret = utask_wait_event(&inst->write_wq, inst->nr_dirty_submitted == 0);
+	if (ret == 0)
+		ret = inst->write_err;
 
-	return inst->write_err;
+	return ret;
 }
 
 /*
@@ -643,11 +649,17 @@ void block_exit(void)
 {
 	struct block_cache_instance *inst = &global_block_cache_inst;
 	struct cached_block *cblk;
+	struct cached_block *tmp;
 	unsigned long fe;
+	int ret;
 
-	/* stop submission and wait for ios to drain */
-	inst->queue_depth = 0;
-	utask_wait_event(&inst->submit_wq, inst->nr_in_flight == 0);
+	utask_cancel(inst->submit_tsk);
+
+	/* wait for io to drain, completion tries to wake submit */
+	inst->exit_tsk = utask_current();
+	ret = utask_wait_event_task(inst->nr_in_flight == 0);
+	BUG_ON(ret != 0); /* _exit shouldn't be canceled */
+	inst->exit_tsk = NULL;
 
 	utask_destroy(inst->submit_tsk);
 	inst->submit_tsk = NULL;
@@ -658,6 +670,9 @@ void block_exit(void)
 	}
 
 	block_clean_all_dirty();
+
+	list_for_each_entry_safe(cblk, tmp, &inst->submit_list, submit_head)
+		put_cblk(cblk);
 
 	while ((cblk = clist_del_first_past_pct(inst, &inst->hot_fifo, 0) ?:
 		       clist_del_first_past_pct(inst, &inst->cold_fifo, 0))) {

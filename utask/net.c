@@ -41,15 +41,21 @@
 static struct net_instance {
 	struct rb_root peer_root;
 	net_recv_fn_t recv_fn;
+	struct utask *destroy_tsk;
+	struct list_head sockets_list;
+	struct list_head destroy_list;
 
 } global_net_inst = {
 	.peer_root = RB_ROOT,
+	.sockets_list = LIST_HEAD_INIT(global_net_inst.sockets_list),
+	.destroy_list = LIST_HEAD_INIT(global_net_inst.destroy_list),
 };
 
 struct net_socket {
 	struct rb_node node;
 	struct sockaddr_in addr;
 	struct list_head send_queue;
+	struct list_head inst_head;
 	int fd;
 
 	struct utask *accept_tsk;
@@ -69,7 +75,7 @@ struct net_send_entry {
 	struct page *data_page;
 };
 
-static struct net_socket *alloc_sock(void)
+static struct net_socket *alloc_sock(struct net_instance *inst)
 {
 	struct net_socket *sock;
 
@@ -78,6 +84,8 @@ static struct net_socket *alloc_sock(void)
 		RB_CLEAR_NODE(&sock->node);
 		INIT_LIST_HEAD(&sock->send_queue);
 		sock->fd = -1;
+
+		list_add_tail(&sock->inst_head, &inst->sockets_list);
 	}
 
 	return sock;
@@ -90,14 +98,23 @@ static void cancel_fd_waiter(int fd)
 
 	sqe = utask_get_sqe_waiter(&waiter);
 	io_uring_prep_cancel_fd(sqe, fd, IORING_ASYNC_CANCEL_ALL);
-	utask_wait_event_task(waiter.completed);
+	utask_wait_event_nocancel(waiter.completed);
 
 	/* it's OK to not find any pending submissions */
 	BUG_ON(waiter.res < 0 && waiter.res != -ENOENT);
 }
 
+static void free_ent(struct net_send_entry *ent)
+{
+	if (!list_empty(&ent->head))
+		list_del_init(&ent->head);
+	if (ent->data_page)
+		put_page(ent->data_page);
+	free(ent);
+}
+
 /*
- * Destroy all the resources associated with the sock.  The caller can't
+ * Free all the resources associated with the sock.  The caller can't
  * touch the sock after this is called.
  *
  * The calling utask itself won't be destroyed if it's one of the sock
@@ -108,24 +125,57 @@ static void cancel_fd_waiter(int fd)
  * waiters.  So we stop activity on the socket and cancel all ops before
  * tearing down the tasks.
  */
-static void destroy_sock(struct net_instance *inst, struct net_socket *sock)
+static void free_sock(struct net_instance *inst, struct net_socket *sock)
 {
+	struct net_send_entry *ent;
+	struct net_send_entry *tmp;
+
 	/* I think shutdown is non-blocking?   hmm. */
 	if (sock->fd >= 0) {
 		shutdown(sock->fd, SHUT_RDWR);
 		cancel_fd_waiter(sock->fd);
 	}
 
-	utask_destroy_other(sock->accept_tsk);
-	utask_destroy_other(sock->send_tsk);
-	utask_destroy_other(sock->recv_tsk);
+	utask_destroy(sock->accept_tsk);
+	utask_destroy(sock->send_tsk);
+	utask_destroy(sock->recv_tsk);
 
 	if (sock->fd >= 0)
 		close(sock->fd);
 
+	list_for_each_entry_safe(ent, tmp, &sock->send_queue, head)
+		free_ent(ent);
+
 	if (!RB_EMPTY_NODE(&sock->node))
 		rb_erase(&sock->node, &inst->peer_root);
+	if (!list_empty(&sock->inst_head))
+		list_del_init(&sock->inst_head);
 	free(sock);
+}
+
+/*
+ * Freeing sockets can wait for other utasks or canceled io_uring ops.
+ * The exiting won't cancel us until we're done with the destroy list.
+ */
+static void destroy_utask(void *data)
+{
+	struct net_instance *inst = data;
+	struct net_socket *sock;
+	struct net_socket *tmp;
+
+	do {
+		utask_wait_event_task(!list_empty(&inst->destroy_list));
+
+		list_for_each_entry_safe(sock, tmp, &inst->destroy_list, inst_head)
+			free_sock(inst, sock);
+
+	} while (!utask_am_canceled());
+}
+
+static void destroy_sock(struct net_instance *inst, struct net_socket *sock)
+{
+	list_move_tail(&sock->inst_head, &inst->destroy_list);
+	utask_wake_task(inst->destroy_tsk);
 }
 
 static struct net_socket *get_peer_sock(struct net_instance *inst, struct sockaddr_in *addr,
@@ -173,16 +223,20 @@ static ssize_t sendmsg_waiter(int fd, struct msghdr *msg, int flags)
 	struct utask_cqe_waiter waiter;
 	struct io_uring_sqe *sqe;
 	size_t full_len;
+	int ret;
 
 	full_len = iov_length(msg->msg_iov, msg->msg_iovlen);
 
 	sqe = utask_get_sqe_waiter(&waiter);
 	io_uring_prep_sendmsg(sqe, fd, msg, flags | MSG_WAITALL);
-	utask_wait_event_task(waiter.completed);
+	ret = utask_wait_event_task(waiter.completed);
 
-	BUG_ON(waiter.res >= 0 && waiter.res != full_len);
+	BUG_ON(ret == 0 && waiter.res >= 0 && waiter.res != full_len);
 
-	return waiter.res;
+	if (ret == 0)
+		ret = waiter.res;
+
+	return ret;
 }
 
 static ssize_t recvmsg_waiter(int fd, struct msghdr *msg, int flags)
@@ -190,31 +244,38 @@ static ssize_t recvmsg_waiter(int fd, struct msghdr *msg, int flags)
 	struct utask_cqe_waiter waiter;
 	struct io_uring_sqe *sqe;
 	size_t full_len;
+	int ret;
 
 	full_len = iov_length(msg->msg_iov, msg->msg_iovlen);
 
 	sqe = utask_get_sqe_waiter(&waiter);
 	io_uring_prep_recvmsg(sqe, fd, msg, flags | MSG_WAITALL);
-	utask_wait_event_task(waiter.completed);
+	ret = utask_wait_event_task(waiter.completed);
 
-	BUG_ON(waiter.res >= 0 && waiter.res != full_len);
+	BUG_ON(ret == 0 && waiter.res >= 0 && waiter.res != full_len);
+	if (ret == 0)
+		ret = waiter.res;
 
-	return waiter.res;
+	return ret;
 }
 
 static ssize_t recv_waiter(int fd, void *buf, size_t size, int flags)
 {
 	struct utask_cqe_waiter waiter;
 	struct io_uring_sqe *sqe;
+	int ret;
 
 	sqe = utask_get_sqe_waiter(&waiter);
 	io_uring_prep_recv(sqe, fd, buf, size, flags | MSG_WAITALL);
-	utask_wait_event_task(waiter.completed);
+	ret = utask_wait_event_task(waiter.completed);
 
 	/* == 0 when fd is shutdown/disconnected */
-	BUG_ON(waiter.res > 0 && waiter.res != size);
+	BUG_ON(ret == 0 && waiter.res > 0 && waiter.res != size);
 
-	return waiter.res;
+	if (ret == 0)
+	       ret = waiter.res;
+
+	return ret;
 }
 
 static void send_utask(void *data)
@@ -228,7 +289,9 @@ static void send_utask(void *data)
 	int nr;
 
 	for (;;) {
-		utask_wait_event_task(!list_empty(&sock->send_queue));
+		ret = utask_wait_event_task(!list_empty(&sock->send_queue));
+		if (ret < 0)
+			break;
 
 		while ((ent = list_first_entry_or_null(&sock->send_queue,
 						       struct net_send_entry, head))) {
@@ -253,10 +316,7 @@ static void send_utask(void *data)
 			if (ret < 0)
 				break;
 
-			list_del_init(&ent->head);
-			if (ent->data_page)
-				put_page(ent->data_page);
-			free(ent);
+			free_ent(ent);
 		}
 	}
 
@@ -381,12 +441,15 @@ static int accept_waiter(int fd, struct sockaddr *addr, socklen_t *addrlen, int 
 {
 	struct utask_cqe_waiter waiter;
 	struct io_uring_sqe *sqe;
+	int ret;
 
 	sqe = utask_get_sqe_waiter(&waiter);
 	io_uring_prep_accept(sqe, fd, addr, addrlen, flags);
-	utask_wait_event_task(waiter.completed);
+	ret = utask_wait_event_task(waiter.completed);
+	if (ret == 0)
+		ret = waiter.res;
 
-	return waiter.res;
+	return ret;
 }
 
 static void accept_utask(void *data)
@@ -409,7 +472,7 @@ static void accept_utask(void *data)
 			goto out;
 		fd = ret;
 
-		accepted = alloc_sock();
+		accepted = alloc_sock(inst);
 		if (!accepted) {
 			ret = -ENOMEM;
 			close(fd);
@@ -472,7 +535,7 @@ int net_listen(struct sockaddr_in *addr)
 		goto out;
 	}
 
-	sock = alloc_sock();
+	sock = alloc_sock(inst);
 	if (!sock) {
 		ret = -ENOMEM;
 		goto out;
@@ -500,12 +563,15 @@ static int connect_waiter(int fd, struct sockaddr *addr, socklen_t addrlen)
 {
 	struct utask_cqe_waiter waiter;
 	struct io_uring_sqe *sqe;
+	int ret;
 
 	sqe = utask_get_sqe_waiter(&waiter);
 	io_uring_prep_connect(sqe, fd, addr, addrlen);
-	utask_wait_event_task(waiter.completed);
+	ret = utask_wait_event_task(waiter.completed);
+	if (ret == 0)
+		ret = waiter.res;
 
-	return waiter.res;
+	return ret;
 }
 
 /*
@@ -529,7 +595,7 @@ int net_connect(struct sockaddr_in *addr)
 	if (ret < 0)
 		goto out;
 
-	sock = alloc_sock();
+	sock = alloc_sock(inst);
 	if (!sock) {
 		ret = -ENOMEM;
 		goto out;
@@ -562,4 +628,25 @@ int net_register_recv(net_recv_fn_t recv_fn)
 	inst->recv_fn = recv_fn;
 
 	return 0;
+}
+
+int net_init(void)
+{
+	struct net_instance *inst = &global_net_inst;
+
+	return utask_create_nowake(destroy_utask, inst, &inst->destroy_tsk);
+}
+
+void net_exit(void)
+{
+	struct net_instance *inst = &global_net_inst;
+
+	inst->recv_fn = NULL;
+
+	list_splice_init(&inst->sockets_list, &inst->destroy_list);
+	if (inst->destroy_tsk) {
+		utask_wake_task(inst->destroy_tsk);
+		utask_destroy(inst->destroy_tsk);
+		inst->destroy_tsk = NULL;
+	}
 }

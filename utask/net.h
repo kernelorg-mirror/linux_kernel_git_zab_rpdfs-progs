@@ -19,4 +19,7 @@ int net_connect(struct sockaddr_in *addr);
 
 int net_register_recv(net_recv_fn_t recv_fn);
 
+int net_init(void);
+void net_exit(void);
+
 #endif

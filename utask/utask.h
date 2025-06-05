@@ -32,10 +32,18 @@ struct utask_wait_entry {
 #define DECLARE_UTASK_WAIT(name) \
 	struct utask_wait_entry name = INIT_UTASK_WAIT(name);
 
+#define __utask_canceled_err()			\
+({						\
+	utask_am_canceled() ? -ECANCELED : 0;	\
+})
+
 /*
  * Block a utask until the condition is true.  The task is put on the
  * wait queue and it must be woken by other utasks as the condition
  * becomes true.
+ *
+ * Returns (int)0 if the condition was true and -ECANCELED if the task
+ * was canceled and should return from its fn.
  *
  * This naturally expands/evaluates the condition as many times as is
  * needed for wakeups to test the condition and go back to sleep.  Be
@@ -44,27 +52,48 @@ struct utask_wait_entry {
  * This variant mirror's the kernel's wait_event_*() APIs that are built
  * for multiple tasks on a wait queue all waiting for the condition.
  */
-#define utask_wait_event(wq, cond)			\
-do {							\
-	if (!(cond)) {					\
-		DECLARE_UTASK_WAIT(wait_);		\
-							\
-		utask_prepare_wait((wq), &wait_);	\
-		while (!(cond))				\
-			utask_schedule();		\
-		utask_finish_wait(&wait_);		\
-	}						\
-} while (0)
+#define utask_wait_event(wq, cond)					\
+({									\
+	int ret_ = 0;							\
+									\
+	if (!(cond)) {							\
+		DECLARE_UTASK_WAIT(wait_);				\
+									\
+		utask_prepare_wait((wq), &wait_);			\
+		while (!(cond) && !(ret_ = __utask_canceled_err()))	\
+			utask_schedule();				\
+		utask_finish_wait(&wait_);				\
+	}								\
+									\
+	ret_;								\
+})
 
 /*
  * Like _wait_event(), but utasks that change the condition wake the
  * single blocked utask directly instead of waking multiple utasks on a
  * wait queue.
  */
-#define utask_wait_event_task(cond)		\
-do {						\
-	while (!(cond))				\
-		utask_schedule();		\
+#define utask_wait_event_task(cond)					\
+({									\
+	int ret_ = 0;							\
+									\
+	while (!(cond) && !(ret_ = __utask_canceled_err()))		\
+		utask_schedule();					\
+									\
+	ret_;								\
+})
+
+/*
+ * This waiting variant isn't interrupted by the task being canceled.
+ * This should be very rarely used in teardown paths to wait on
+ * conditions that are sure to be met.  It lets utasks that are
+ * themselves tearing down still make progress while another utask is
+ * waiting for them to finish.
+ */
+#define utask_wait_event_nocancel(cond)					\
+do {									\
+	while (!(cond))							\
+		utask_schedule();					\
 } while (0)
 
 /*
@@ -94,6 +123,8 @@ int utask_run(void);
 
 int utask_create(utask_fn_t fn, void *data, struct utask **tsk_ret);
 int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret);
+void utask_cancel(struct utask *tsk);
+bool utask_am_canceled(void);
 void utask_destroy(struct utask *tsk);
 void utask_destroy_other(struct utask *tsk);
 void utask_init_wait_queue(struct utask_wait_queue *wq);

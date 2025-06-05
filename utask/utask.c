@@ -60,6 +60,9 @@ struct utask {
 	unsigned long magic;
 	struct list_head run_head;
 	struct list_head wait_head;
+	unsigned long canceled:1,
+		      finished:1;
+	struct utask *destroyer;
 	utask_fn_t fn;
 	void *data;
 	void *stack;
@@ -126,13 +129,65 @@ void utask_wake_task(struct utask *tsk)
 {
 	struct utask_instance *inst = &global_utask_inst;
 
-	if (list_empty(&tsk->run_head))
+	if (!tsk->finished && list_empty(&tsk->run_head))
 		list_add_tail(&tsk->run_head, &inst->run_list);
 }
 
+/*
+ * Mark a task as canceled and wake it up.  _wait_event calls made by
+ * the task will will return with -ECANCELED if the condition isn't met
+ * and _am_canceled() will return true.
+ *
+ * This is a nop for a null task so that it can be used in teardown
+ * paths without conditionals.
+ */
+void utask_cancel(struct utask *tsk)
+{
+	if (tsk && !tsk->canceled) {
+		tsk->canceled = 1;
+		utask_wake_task(tsk);
+	}
+}
+
+/*
+ * Returns true if the current task has been marked canceled.
+ */
+bool utask_am_canceled(void)
+{
+	struct utask *tsk = utask_current();
+
+	return tsk->canceled;
+}
+
+/*
+ * Free the given tsk once it finished execution by returning from its
+ * fn ("finished").  If the task has already finished then this can be
+ * called from outside of utasks.
+ *
+ * If the task hasn't finished, then the marked canceled to cause it to
+ * return from wait event calls.  This must be called from a different
+ * utask so we can wait for the given task to finish.  Only one caller
+ * can wait on and destroy a given task.
+ *
+ * This should be called for every successfully created task during
+ * clean shutdown.
+ *
+ * This is a nop for a null task so that it can be used in teardown
+ * paths without conditionals.
+ */
 void utask_destroy(struct utask *tsk)
 {
 	if (tsk) {
+		if (!tsk->finished) {
+			BUG_ON(tsk == utask_current());
+			BUG_ON(tsk->destroyer);
+
+			utask_cancel(tsk);
+			tsk->destroyer = utask_current();
+
+			utask_wait_event_nocancel(tsk->finished);
+		}
+
 		if (!list_empty(&tsk->run_head))
 			list_del_init(&tsk->run_head);
 		if (!list_empty(&tsk->wait_head))
@@ -173,8 +228,11 @@ int utask_run(void)
 			list_del_init(&tsk->run_head);
 
 			ret = utask_switch_to(tsk);
-			if (ret == UTASK_RET_FINISHED)
-				utask_destroy(tsk);
+			if (ret == UTASK_RET_FINISHED) {
+				tsk->finished = 1;
+				if (tsk->destroyer)
+					utask_wake_task(tsk->destroyer);
+			}
 		}
 
 		/* submit and sqes that utasks prepared, and gather cqes */
@@ -271,6 +329,9 @@ int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret)
 	tsk->magic = UTASK_MAGIC;
 	INIT_LIST_HEAD(&tsk->run_head);
 	INIT_LIST_HEAD(&tsk->wait_head);
+	tsk->canceled = 0;
+	tsk->finished = 0;
+	tsk->destroyer = NULL;
 	tsk->fn = fn;
 	tsk->data = data;
 	tsk->stack = stack;

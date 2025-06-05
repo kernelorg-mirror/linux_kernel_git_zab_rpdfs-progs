@@ -287,9 +287,9 @@ static u64 current_commit_phase(struct bstore_instance *inst)
  * the caller's phase ensures that we wait for the commit they sampled
  * to complete whether it was dirtying or being written.
  */
-static void wait_until_commit_done(struct bstore_instance *inst, u64 phase)
+static int wait_until_commit_done(struct bstore_instance *inst, u64 phase)
 {
-	utask_wait_event(&inst->commit_wq, current_commit_phase(inst) > (phase | 1));
+	return utask_wait_event(&inst->commit_wq, current_commit_phase(inst) > (phase | 1));
 }
 
 static u64 journal_blocks(struct bstore_instance *inst)
@@ -352,17 +352,23 @@ static int prepare_dirty_commit(struct bstore_instance *inst, u64 stable_ctr,
 	}
 
 	/* can't modify commit being written, everyone waits for io to complete */
-	utask_wait_event(&inst->commit_wq, (current_commit_phase(inst) & 1) == 0);
+	ret = utask_wait_event(&inst->commit_wq, (current_commit_phase(inst) & 1) == 0);
+	if (ret < 0)
+		goto out;
 
 	if (!is_replay) {
 		/* kick off replay if the journal is getting full, waiting if it's too full */
 		if (journal_used_pct(inst) > 80)
 			utask_wake_task(inst->replay_tsk);
-		utask_wait_event(&inst->commit_wq, journal_used_pct(inst) < 95);
+		ret = utask_wait_event(&inst->commit_wq, journal_used_pct(inst) < 95);
+		if (ret < 0)
+			goto out;
 
 		/* all non-replay share prepare max */
-		utask_wait_event(&inst->commit_wq, (inst->non_replay_entries  + block_count) <=
-							MAX_PREPARED_ENTRIES);
+		ret = utask_wait_event(&inst->commit_wq, (inst->non_replay_entries + block_count)
+								<= MAX_PREPARED_ENTRIES);
+		if (ret < 0)
+			goto out;
 	}
 
 	/* verify inputs after possibly sleeping */
@@ -452,12 +458,16 @@ static bool retry_prepare_dirty(struct bstore_instance *inst, u64 stable_ctr, in
 static int finish_dirty_commit(struct bstore_instance *inst, struct list_head *pool)
 {
 	u64 phase = current_commit_phase(inst);
+	int ret;
 
 	block_free_pool(pool);
 	utask_wake_task(inst->commit_tsk);
-	wait_until_commit_done(inst, phase);
 
-	return inst->last_commit_ret;
+	ret = wait_until_commit_done(inst, phase);
+	if (ret == 0)
+	       ret = inst->last_commit_ret;
+
+	return ret;
 }
 
 /*
@@ -1320,9 +1330,9 @@ void bstore_exit(void)
 {
 	struct bstore_instance *inst = &global_bstore_inst;
 
+	utask_destroy(inst->replay_tsk);
+	utask_destroy(inst->commit_tsk);
 	free(inst->stable_ht);
 	free(inst->dirty_ht);
-	utask_destroy(inst->commit_tsk);
-	utask_destroy(inst->replay_tsk);
 	memset(inst, 0, sizeof(struct bstore_instance));
 }

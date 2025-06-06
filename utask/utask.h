@@ -120,6 +120,7 @@ extern void utask_schedule(void);
 void utask_finish(void);
 
 int utask_run(void);
+void utask_shutdown(void);
 
 int utask_create(utask_fn_t fn, void *data, struct utask **tsk_ret);
 int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret);

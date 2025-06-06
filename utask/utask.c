@@ -50,6 +50,8 @@ static struct utask_instance {
 	struct list_head run_list;
 	struct io_uring ring;
 	bool ring_initialized;
+	bool shutdown;
+	struct utask_cqe_callback shutdown_nop_cb;
 
 } global_utask_inst = {
 	.run_list = LIST_HEAD_INIT(global_utask_inst.run_list),
@@ -235,6 +237,9 @@ int utask_run(void)
 			}
 		}
 
+		if (inst->shutdown)
+			break;
+
 		/* submit and sqes that utasks prepared, and gather cqes */
 		io_uring_submit_and_get_events(&inst->ring);
 
@@ -252,6 +257,35 @@ int utask_run(void)
 	}
 
 	return 0;
+}
+
+static void shutdown_cb(struct io_uring_cqe *cqe, struct utask_cqe_callback *cb)
+{
+	struct utask_instance *inst = &global_utask_inst;
+
+	inst->shutdown = 1;
+}
+
+/*
+ * Start an orderly shutdown of utasks.
+ *
+ * utask_run() will return after it processes all the completion events
+ * and runnable tasks that were ready after it processes the callback
+ * for our nop which sets shutdown on the instance.
+ *
+ * This is a bit fragile and incomplete. It could ensure that there
+ * aren't any more tasks other than the one calling _shutdown.
+ */
+void utask_shutdown(void)
+{
+	struct utask_instance *inst = &global_utask_inst;
+	struct io_uring_sqe *sqe;
+
+	sqe = io_uring_get_sqe(utask_ring());
+	BUG_ON(!sqe);
+
+	utask_set_sqe_callback(sqe, &inst->shutdown_nop_cb, shutdown_cb);
+	io_uring_prep_nop(sqe);
 }
 
 /*
@@ -449,6 +483,8 @@ void utask_exit(void)
 		io_uring_queue_exit(&inst->ring);
 		inst->ring_initialized = false;
 	}
+
+	inst->shutdown = false;
 }
 
 /*

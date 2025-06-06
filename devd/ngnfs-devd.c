@@ -29,6 +29,7 @@
 
 #include "utask/block.h"
 #include "utask/net.h"
+#include "utask/sigcb.h"
 #include "utask/utask.h"
 
 #include "devd/bstore.h"
@@ -80,28 +81,72 @@ static int parse_devd_opt(int c, char *str, void *arg)
 #define BLOCK_QUEUE_DEPTH	32
 #define NET_QUEUE_DEPTH		16 /* XXX no idea */
 
-int main(int argc, char **argv)
+struct devd_main {
+	struct devd_options opts;
+	struct utask *tsk;
+	int err;
+};
+
+static void signal_shutdown_cb(siginfo_t *si, void *arg)
 {
-	struct devd_options opts = { };
+	struct devd_main *main = arg;
+
+	utask_cancel(main->tsk);
+}
+
+static void main_utask(void *data)
+{
+	struct devd_main *dm = data;
+	struct signal_callback *sigcb = NULL;
+	sigset_t set;
 	int ret;
 
-	ret = getopt_long_more(argc, argv, devd_moreopts, ARRAY_SIZE(devd_moreopts),
-			       parse_devd_opt, &opts) ?:
-	      trace_setup(opts.trace_path);
+	/* arrange to shutdown if we get signals */
+	sigemptyset(&set);
+	sigaddset(&set, SIGTERM);
+	sigaddset(&set, SIGINT);
+	ret = sigcb_register_callback(&set, signal_shutdown_cb, &dm, &sigcb);
 	if (ret < 0)
 		goto out;
 
-	ret = utask_init(BLOCK_QUEUE_DEPTH + NET_QUEUE_DEPTH) ?:
-	      net_register_recv(proc_recv) ?:
-	      net_listen(&opts.listen_addr) ?:
-	      block_init(opts.dev_path, BLOCK_QUEUE_DEPTH) ?:
+	ret = block_init(dm->opts.dev_path, BLOCK_QUEUE_DEPTH) ?:
 	      bstore_init() ?:
-	      utask_run();
+	      net_init() ?:
+	      net_register_recv(proc_recv) ?:
+	      net_listen(&dm->opts.listen_addr) ?:
+	      utask_wait_event_task(utask_am_canceled());
 
+	net_exit();
 	bstore_exit();
 	block_exit();
-	utask_exit();
+	sigcb_free(sigcb);
 out:
+	utask_shutdown();
+
+	dm->err = ret;
+}
+
+int main(int argc, char **argv)
+{
+	struct devd_main dm = {{},};
+	int ret;
+
+	/* setup the most basic subsystems */
+	ret = getopt_long_more(argc, argv, devd_moreopts, ARRAY_SIZE(devd_moreopts),
+			       parse_devd_opt, &dm.opts) ?:
+	      trace_setup(dm.opts.trace_path) ?:
+	      utask_init(BLOCK_QUEUE_DEPTH + NET_QUEUE_DEPTH);
+	if (ret < 0)
+		goto out;
+
+
+	/* switch over to the main utask for the rest of init */
+	ret = utask_create(main_utask, &dm, &dm.tsk) ?:
+	      utask_run();
+out:
+	utask_destroy(dm.tsk);
+	utask_exit();
 	trace_destroy();
-	return !!ret;
+
+	return ret < 0 ? 1 : 0;
 }

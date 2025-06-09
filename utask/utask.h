@@ -125,6 +125,7 @@ void utask_shutdown(void);
 int utask_create(utask_fn_t fn, void *data, struct utask **tsk_ret);
 int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret);
 struct utask *utask_current(void);
+u64 utask_current_id(void);
 void utask_cancel(struct utask *tsk);
 bool utask_am_canceled(void);
 void utask_destroy(struct utask *tsk);

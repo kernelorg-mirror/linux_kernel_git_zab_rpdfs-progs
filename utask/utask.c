@@ -49,6 +49,7 @@
 static struct utask_instance {
 	struct list_head run_list;
 	struct io_uring ring;
+	u64 next_id;
 	bool ring_initialized;
 	bool shutdown;
 	struct utask_cqe_callback shutdown_nop_cb;
@@ -64,6 +65,7 @@ struct utask {
 	struct list_head wait_head;
 	unsigned long canceled:1,
 		      finished:1;
+	u64 id;
 	struct utask *destroyer;
 	utask_fn_t fn;
 	void *data;
@@ -74,10 +76,13 @@ struct utask {
 
 /*
  * Return the utask pointer for the executing utask by masking the stack
- * pointer.  This asserts that it's only called within a valid utask by
- * checking a magic number in the struct at the masked stack address.
+ * pointer.  Returns NULL if we're not executing in a utask.
+ *
+ * We're assuming that we can always dereference the magic found at in
+ * the end of the aligned region of the stack as though it was a full
+ * utask's size.  This might be too risky :(.
  */
-struct utask *utask_current(void)
+static struct utask *get_current_utask(void)
 {
 	struct utask *tsk;
 	unsigned long sp;
@@ -87,8 +92,31 @@ struct utask *utask_current(void)
 
 	tsk = (void *)(round_up(sp, UTASK_STACK_SIZE) - sizeof(struct utask));
 
-	BUG_ON(tsk->magic != UTASK_MAGIC);
+	return tsk->magic == UTASK_MAGIC ? tsk : NULL;
+}
+
+/*
+ * Return the pointer to the utask that we're executing in.  This
+ * asserts if it's not called from within a utask.
+ */
+struct utask *utask_current(void)
+{
+	struct utask *tsk = get_current_utask();
+
+	BUG_ON(!tsk);
 	return tsk;
+}
+
+/*
+ * Returns the task ID of the current task.  IDs are assigned
+ * sequentially from 1 and are never re-used.  Returns 0 when this isn't
+ * run in a utask.
+ */
+u64 utask_current_id(void)
+{
+	struct utask *tsk = get_current_utask();
+
+	return tsk ? tsk->id : 0;
 }
 
 void utask_init_wait_queue(struct utask_wait_queue *wq)
@@ -346,6 +374,7 @@ static void push_stack(struct utask *tsk, void *ptr)
  */
 int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret)
 {
+	struct utask_instance *inst = &global_utask_inst;
 	struct utask *tsk = NULL;
 	unsigned long after;
 	void *stack;
@@ -365,6 +394,7 @@ int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret)
 	INIT_LIST_HEAD(&tsk->wait_head);
 	tsk->canceled = 0;
 	tsk->finished = 0;
+	tsk->id = inst->next_id++;
 	tsk->destroyer = NULL;
 	tsk->fn = fn;
 	tsk->data = data;
@@ -466,6 +496,8 @@ int utask_init(u32 entries)
 {
 	struct utask_instance *inst = &global_utask_inst;
 	int ret;
+
+	inst->next_id = 1;
 
 	ret = io_uring_queue_init(entries, &inst->ring, IORING_SETUP_COOP_TASKRUN |
 				  IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);

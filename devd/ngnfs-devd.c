@@ -16,6 +16,7 @@
 #include <netinet/tcp.h>
 
 #include "shared/block.h"
+#include "shared/dtracef.h"
 #include "shared/lk/err.h"
 #include "shared/lk/kernel.h"
 #include "shared/log.h"
@@ -25,7 +26,6 @@
 #include "shared/options.h"
 #include "shared/parse.h"
 #include "shared/thread.h"
-#include "shared/trace.h"
 
 #include "utask/block.h"
 #include "utask/net.h"
@@ -55,7 +55,7 @@ static struct option_more devd_moreopts[] = {
 	{ .longopt = { "trace_file", required_argument, NULL, 't' },
 	  .arg = "file_path",
 	  .desc = "append debugging traces to this file",
-	  .required = 1, },
+	},
 };
 
 static int parse_devd_opt(int c, char *str, void *arg)
@@ -134,11 +134,10 @@ int main(int argc, char **argv)
 	/* setup the most basic subsystems */
 	ret = getopt_long_more(argc, argv, devd_moreopts, ARRAY_SIZE(devd_moreopts),
 			       parse_devd_opt, &dm.opts) ?:
-	      trace_setup(dm.opts.trace_path) ?:
+	      (dm.opts.trace_path ? dtracef_init(dm.opts.trace_path) : 0) ?:
 	      utask_init(BLOCK_QUEUE_DEPTH + NET_QUEUE_DEPTH);
 	if (ret < 0)
 		goto out;
-
 
 	/* switch over to the main utask for the rest of init */
 	ret = utask_create(main_utask, &dm, &dm.tsk) ?:
@@ -146,7 +145,7 @@ int main(int argc, char **argv)
 out:
 	utask_destroy(dm.tsk);
 	utask_exit();
-	trace_destroy();
+	dtracef_exit();
 
 	return ret < 0 ? 1 : 0;
 }

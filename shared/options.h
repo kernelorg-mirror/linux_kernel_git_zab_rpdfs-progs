@@ -4,17 +4,20 @@
 
 #include <getopt.h>
 
-enum {
-	optional_opt = 0,
-	required_opt = 1,
-};
-
+/*
+ * The longopt options control the general option parsing.  In
+ * particular, the "has_arg" constants (no_argument, optional_argument,
+ * required_argument) specify if each option has arguments.
+ *
+ * Our _more flags then add additional constraints.
+ */
 struct option_more {
 	struct option longopt;
 	char *arg;
 	char *desc;
-	unsigned required:1,
-		 _given:1;	/* remaining internal flags used by parsing, not specification */
+	unsigned required:1,	/* whether this *option* is required */
+		/* remaining internal flags used by parsing, not caller specification */
+		 _given:1;
 };
 
 typedef int (*opt_parse_t)(int c, char *str, void *arg);

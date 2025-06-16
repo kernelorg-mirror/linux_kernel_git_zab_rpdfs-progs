@@ -87,11 +87,14 @@ struct devd_main {
 	int err;
 };
 
-static void signal_shutdown_cb(siginfo_t *si, void *arg)
+static void signal_cb(siginfo_t *si, void *arg)
 {
-	struct devd_main *main = arg;
+	struct devd_main *dm = arg;
 
-	utask_cancel(main->tsk);
+	if (si->si_signo == SIGUSR1)
+		utask_print_tasks();
+	else
+		utask_cancel(dm->tsk);
 }
 
 static void main_utask(void *data)
@@ -105,7 +108,8 @@ static void main_utask(void *data)
 	sigemptyset(&set);
 	sigaddset(&set, SIGTERM);
 	sigaddset(&set, SIGINT);
-	ret = sigcb_register_callback(&set, signal_shutdown_cb, &dm, &sigcb);
+	sigaddset(&set, SIGUSR1);
+	ret = sigcb_register_callback(&set, signal_cb, dm, &sigcb);
 	if (ret < 0)
 		goto out;
 

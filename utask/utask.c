@@ -48,6 +48,7 @@
 
 static struct utask_instance {
 	struct list_head run_list;
+	struct list_head tsk_list;
 	struct io_uring ring;
 	u64 next_id;
 	bool ring_initialized;
@@ -56,17 +57,23 @@ static struct utask_instance {
 
 } global_utask_inst = {
 	.run_list = LIST_HEAD_INIT(global_utask_inst.run_list),
+	.tsk_list = LIST_HEAD_INIT(global_utask_inst.tsk_list),
 	.ring_initialized = false,
 };
 
 struct utask {
 	unsigned long magic;
 	struct list_head run_head;
+	struct list_head tsk_head;
 	struct list_head wait_head;
 	unsigned long canceled:1,
 		      finished:1;
+	char *name;
 	u64 id;
 	struct utask *destroyer;
+	const char *sched_file;
+	const char *sched_func;
+	unsigned int sched_line;
 	utask_fn_t fn;
 	void *data;
 	void *stack;
@@ -349,6 +356,21 @@ static void utask_yield(void)
 }
 
 /*
+ * Stop the calling task and switch from its stack to the scheduler's
+ * after recording info about the time it spent running.
+ */
+void utask_schedule_info(const char *func, const char *file, unsigned int line)
+{
+	struct utask *tsk = utask_current();
+
+	tsk->sched_func = func;
+	tsk->sched_file = file;
+	tsk->sched_line = line;
+
+	utask_switch_from();
+}
+
+/*
  * Newly created utasks jump to this at the base of their stack
  */
 static void utask_entry(void)
@@ -372,7 +394,7 @@ static void push_stack(struct utask *tsk, void *ptr)
  * Allocate and run a new utask.  The new task will be idle and it's up
  * to the caller to wake it.
  */
-int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret)
+int utask_create_name_nowake(char *name, utask_fn_t fn, void *data, struct utask **tsk_ret)
 {
 	struct utask_instance *inst = &global_utask_inst;
 	struct utask *tsk = NULL;
@@ -392,8 +414,10 @@ int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret)
 	tsk->magic = UTASK_MAGIC;
 	INIT_LIST_HEAD(&tsk->run_head);
 	INIT_LIST_HEAD(&tsk->wait_head);
+	list_add_tail(&tsk->tsk_head, &inst->tsk_list);
 	tsk->canceled = 0;
 	tsk->finished = 0;
+	tsk->name = name;
 	tsk->id = inst->next_id++;
 	tsk->destroyer = NULL;
 	tsk->fn = fn;
@@ -430,9 +454,9 @@ out:
  * Allocate and run a new utask.  If this returns success then the fn
  * will be called from the newly created utask.
  */
-int utask_create(utask_fn_t fn, void *data, struct utask **tsk_ret)
+int utask_create_name(char *name, utask_fn_t fn, void *data, struct utask **tsk_ret)
 {
-	int ret = utask_create_nowake(fn, data, tsk_ret);
+	int ret = utask_create_name_nowake(name, fn, data, tsk_ret);
 	if (ret == 0)
 		utask_wake_task(*tsk_ret);
 	return ret;
@@ -492,6 +516,29 @@ struct io_uring_sqe *utask_get_sqe_waiter(struct utask_cqe_waiter *waiter)
 	utask_set_sqe_callback(sqe, &waiter->cb, wake_waiter_cqe_fn);
 
 	return sqe;
+}
+
+void utask_print_tasks(void)
+{
+	struct utask_instance *inst = &global_utask_inst;
+	u64 cid = utask_current_id();
+	struct utask *tsk;
+
+	fprintf(stderr, "\n");
+	list_for_each_entry(tsk, &inst->tsk_list, tsk_head) {
+		fprintf(stderr, "  %llu %c%c%c %s ",
+			tsk->id,
+			(tsk->canceled ? 'C' : '-'),
+			(tsk->finished ? 'F' : '-'),
+			(tsk->id == cid ? 'R' : '-'),
+			tsk->name);
+
+		if (tsk->id != cid && tsk->sched_func)
+			fprintf(stderr, "slept in %s() at %s:%u\n",
+				tsk->sched_func, tsk->sched_file, tsk->sched_line);
+		else
+			fprintf(stderr, "\n");
+	}
 }
 
 int utask_init(u32 entries)

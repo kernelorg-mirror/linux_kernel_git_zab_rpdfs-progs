@@ -49,14 +49,14 @@
 #
 # int utask_switch_to(utask *utask /* rdi */);
 #
-# Resume execution of a utask that was previously stopped by calling
-# _schedule.
+# Resume execution of a utask that was previously stopped by switching
+# from the scheduler's stack to the task's.
 #
 # Save the calling scheduler's stack pointer, restore the utask's stack
 # pointer, and return into the address that the utask pushed as they
-# called _schedule.
+# last called _switch_from.
 #
-# The ret here is returning to the caller of _schedule, which is void,
+# The ret here is returning to the caller of _switch_from, which is void,
 # so we don't set a return code.
 #
 .globl utask_switch_to
@@ -69,18 +69,19 @@ utask_switch_to:
 	ret
 
 #
-# void utask_schedule(void)
+# void utask_switch_from(void)
 #
-# Pause execution of a utask and return to the scheduler.
+# Pause execution of a utask by switching from the task's stack to the
+# scheduler's.
 #
 # Save the utask's stack, restore the scheduler's, and return into it.
 #
 # The ret here is returning to the caller of _switch_to and we set the
 # code to indicate that the utask scheduled and still running.
 #
-.globl utask_schedule
-.type utask_schedule, @function
-utask_schedule:
+.globl utask_switch_from
+.type utask_switch_from, @function
+utask_switch_from:
 	push_callee_saved
 	load_utask_rbx
 	movq %rsp, UTASK_ASM_OFFSETOF_SP(%rbx)

@@ -7,6 +7,7 @@
 #include "shared/lk/bug.h"
 #include "shared/lk/list.h"
 #include "shared/lk/math.h"
+#include "shared/lk/stringify.h"
 #include "shared/lk/types.h"
 
 #include "utask_defs.h"
@@ -31,6 +32,9 @@ struct utask_wait_entry {
 	{ .queue_head = LIST_HEAD_INIT(name.queue_head) }
 #define DECLARE_UTASK_WAIT(name) \
 	struct utask_wait_entry name = INIT_UTASK_WAIT(name);
+
+#define utask_schedule()			\
+	utask_schedule_info(__FUNCTION__, __FILE__, __LINE__)
 
 #define __utask_canceled_err()			\
 ({						\
@@ -96,6 +100,11 @@ do {									\
 		utask_schedule();					\
 } while (0)
 
+#define utask_create(FN_, DATA_, TSK_RET_) \
+	utask_create_name(__stringify(FN_), FN_, DATA_, TSK_RET_)
+#define utask_create_nowake(FN_, DATA_, TSK_RET_) \
+	utask_create_name_nowake(__stringify(FN_), FN_, DATA_, TSK_RET_)
+
 /*
  * We make the embedded container type a struct so that we can
  * predeclare it as an argument to the fn.
@@ -115,15 +124,21 @@ struct utask_cqe_waiter {
 	bool completed;
 };
 
+/*
+ * These are in _asm.S and should only be called from the utask core, not from
+ * tasks themselves.
+ */
 extern int utask_switch_to(struct utask *tsk);
-extern void utask_schedule(void);
-void utask_finish(void);
+extern void utask_switch_from(void);
+extern void utask_finish(void);
 
 int utask_run(void);
 void utask_shutdown(void);
 
-int utask_create(utask_fn_t fn, void *data, struct utask **tsk_ret);
-int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret);
+void utask_schedule_info(const char *func, const char *file, unsigned int line);
+
+int utask_create_name(char *name, utask_fn_t fn, void *data, struct utask **tsk_ret);
+int utask_create_name_nowake(char *name, utask_fn_t fn, void *data, struct utask **tsk_ret);
 struct utask *utask_current(void);
 u64 utask_current_id(void);
 void utask_cancel(struct utask *tsk);
@@ -142,6 +157,8 @@ void utask_set_sqe_callback(struct io_uring_sqe *sqe, struct utask_cqe_callback 
 			    utask_cqe_fn_t fn);
 
 struct io_uring_sqe *utask_get_sqe_waiter(struct utask_cqe_waiter *waiter);
+
+void utask_print_tasks(void);
 
 int utask_init(u32 entries);
 void utask_exit(void);

@@ -405,10 +405,12 @@ int utask_create_nowake(utask_fn_t fn, void *data, struct utask **tsk_ret)
 	 * Make sure sp is 16 byte aligned after we push the entry ret
 	 * addr and initial zeroed regs.
 	 */
-	after = (unsigned long)tsk->sp - sizeof(void *) - UTASK_SAVED_BYTES;
+	after = (unsigned long)tsk->sp - (2 * sizeof(void *)) - UTASK_SAVED_BYTES;
 	if (!IS_ALIGNED(after, 16))
 		tsk->sp -= 16 - (after & 15);
 
+	/* final null address to terminate backtracing unwinders */
+	push_stack(tsk, NULL);
 	/* first switch_to jumps to _entry */
 	push_stack(tsk, utask_entry);
 

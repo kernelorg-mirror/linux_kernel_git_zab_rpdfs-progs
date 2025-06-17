@@ -14,6 +14,7 @@
 #include "shared/lk/string.h"
 #include "shared/lk/overflow.h"
 
+#include "shared/dtracef.h"
 #include "shared/format-block.h"
 #include "shared/format-dev.h"
 #include "shared/hash_table.h"
@@ -224,20 +225,26 @@ static int verify_hdr(struct cached_block *cblk, void *arg)
 	struct verify_hdr_args *vha = arg;
 	struct bstore_instance *inst = vha->inst;
 	u64 crc;
+	int ret;
 
 	if (init_zeroed_header(inst, hdr, vha->type))
 		return 0;
 
 	crc = calc_block_crc(hdr, true);
 
-	if (vha->type != hdr->type || crc != le64_to_cpu(hdr->crc))
-		return -EUCLEAN;
-
 	/* only verify the uuid once we've read a block and read it */
-	if (inst->have_uuid && memcmp(&hdr->dev_uuid, &inst->dev_uuid, sizeof(struct ngnfs_uuid)))
-		return -EUCLEAN;
+	if ((vha->type != hdr->type || crc != le64_to_cpu(hdr->crc)) ||
+	    (inst->have_uuid &&
+	     memcmp(&hdr->dev_uuid, &inst->dev_uuid, sizeof(struct ngnfs_uuid)))) {
+		dtracef("bstore_verify_hdr_failed",
+			"exp type %u crc %016llx hdr type %u crc %016llx",
+			vha->type, crc, hdr->type, le64_to_cpu(hdr->crc));
+		ret = -EUCLEAN;
+	} else {
+		ret = 0;
+	}
 
-	return 0;
+	return ret;
 }
 
 /*
@@ -539,6 +546,8 @@ static void dirty_block(struct bstore_instance *inst, struct ngnfs_dev_commit_bl
 		memset(block_data_buf(*cblk), 0, NGNFS_BLOCK_SIZE);
 
 	init_zeroed_header(inst, block_data_buf(*cblk), type);
+
+	dtracef("bstore_dirty_block", "lba %llu type %u journ_lba %llu", lba, type, dlba);
 }
 
 /*
@@ -636,6 +645,10 @@ static void update_commit_lbas(struct bstore_instance *inst, struct ngnfs_dev_co
 	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
 		ent = &cmt->entries[i];
 
+		dtracef("bstore_update_stable_lba",
+			"lba %llu journ_lba %llu",
+			le64_to_cpu(ent->lba), le64_to_cpu(ent->journ_lba));
+
 		if (ent->lba == ent->journ_lba)
 			htable_delete(inst->stable_ht, le64_to_cpu(ent->lba));
 		else
@@ -719,6 +732,13 @@ static void write_dirty_commit(struct bstore_instance *inst, struct ngnfs_dev_co
 	u64 crc;
 	int ret;
 	int i;
+
+	dtracef("bstore_commit_prepare",
+		"phase %llu ctr %llu old_ctr %llu head_ctr %llu tail_ctr %llu ents %u in_journ %u",
+		inst->commit_phase, le64_to_cpu(cmt->commit_ctr),
+		le64_to_cpu(cmt->oldest_commit_ctr), le64_to_cpu(cmt->journal_head_ctr),
+		le64_to_cpu(cmt->journal_tail_ctr), le16_to_cpu(cmt->nr_entries),
+		le16_to_cpu(cmt->nr_in_journal));
 
 	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
 		ent = &cmt->entries[i];
@@ -956,6 +976,8 @@ int bstore_read(u64 dev_bnr, struct cached_block **cblk)
 
 out:
 	block_putp(&det_cblk);
+
+	dtracef("bstore_read", "dev_bnr %llu ret %d", dev_bnr, ret);
 	return ret;
 }
 
@@ -1028,6 +1050,7 @@ out:
 	block_putp(&det_cblk);
 	block_putp(&sum_cblk);
 
+	dtracef("bstore_write", "dev_bnr %llu ret %d", dev_bnr, ret);
 	return ret;
 }
 
@@ -1081,6 +1104,8 @@ static int check_complete_commit(struct bstore_instance *inst, u64 commit_ctr)
 	ret = 0;
 out:
 	block_put(cmt_cblk);
+
+	dtracef("bstore_check_complete_commit", "ctr %llu ret %d", commit_ctr, ret);
 	return ret;
 }
 
@@ -1122,6 +1147,11 @@ static int find_stable_commit(struct bstore_instance *inst, u64 *commit_ctr_ret)
 		/* XXX not verifying this */
 		cmt = block_data_buf(cblk);
 
+		dtracef("bstore_find_stable",
+			"start %llu mid %llu end %llu gr %llu lba %llu cmt type %u ctr %llu",
+			start, mid, end, greatest, lba, cmt->hdr.type,
+			le64_to_cpu(cmt->commit_ctr));
+
 		/* so far only trimming at format, 0s are unwritten tail */
 		if (cmt->hdr.type == NGNFS_DEV_BLOCK_TYPE_UNINIT) {
 			if (lba == 0) {
@@ -1154,9 +1184,12 @@ static int find_stable_commit(struct bstore_instance *inst, u64 *commit_ctr_ret)
 	ret = check_complete_commit(inst, greatest);
 	if (ret < 0 && greatest > 0)
 		ret = check_complete_commit(inst, --greatest);
+
 out:
 	*commit_ctr_ret = greatest;
 	block_put(cblk);
+
+	dtracef("bstore_find_stable_commit", "ctr %llu ret %d", greatest, ret);
 	return ret;
 }
 
@@ -1263,6 +1296,8 @@ static int load_commit_blocks(struct bstore_instance *inst, u64 commit_ctr)
 	inst->stable_cmt = *cmt;
 	nr = le64_to_cpu(cmt->oldest_commit_ctr);
 	block_put(cblk);
+
+	dtracef("bstore_load_commit_blocks", "old_ctr %llu ctr %llu", nr, commit_ctr);
 
 	for (; nr <= commit_ctr; nr++) {
 		lba = commit_ctr_lba(inst, nr);

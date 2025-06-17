@@ -9,11 +9,13 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 
+#include "shared/lk/err.h"
 #include "shared/lk/list.h"
 #include "shared/lk/rbtree.h"
 
 #include "shared/clist.h"
 #include "shared/devfd.h"
+#include "shared/dtracef.h"
 #include "shared/format-block.h"
 #include "shared/hash_table.h"
 
@@ -73,13 +75,36 @@ struct cached_block {
 	u64 bnr;
 	long refcount;
 	int error;
-	unsigned accessed:1,
-		 hashed:1,
-		 queued:1,
-		 uptodate:1,
-		 verified:1,
-		 dirty:1;
+	/* awkward union magic only for tracing flags */
+	union {
+		unsigned int all_flags_;
+		struct {
+			unsigned int accessed:1,
+				     hashed:1,
+				     queued:1,
+				     uptodate:1,
+				     verified:1,
+				     dirty:1;
+		};
+	};
 };
+
+#define CBLK_FMT	"cblk %p bnr %llu refcount %ld flags 0x%02x"
+#define CBLK_ARGS(CB_)	(CB_), (CB_)->bnr, (CB_)->refcount, (CB_)->all_flags_
+
+/*
+ * A wrapper around the arguments for tracing blocks.  It can also just
+ * do the fmt/args without a block, like in return paths with errors.
+ */
+#define DTRACEF_CBLK(str, cblk, fmt, args...)					\
+do {										\
+	typeof(cblk) cblk_ = (cblk);						\
+										\
+	if (IS_ERR_OR_NULL(cblk_))						\
+		dtracef(str, "bad_cblk %p " fmt, cblk_, ##args);		\
+	else									\
+		dtracef(str, CBLK_FMT " " fmt, CBLK_ARGS(cblk_), ##args);	\
+} while (0)
 
 static struct cached_block *alloc_cblk(struct block_cache_instance *inst)
 {
@@ -97,11 +122,15 @@ static struct cached_block *alloc_cblk(struct block_cache_instance *inst)
 	utask_init_wait_queue(&cblk->wq);
 	cblk->refcount = 1;
 
+	DTRACEF_CBLK("block_alloc", cblk, "");
+
 	return cblk;
 }
 
 static void free_cblk(struct cached_block *cblk)
 {
+	DTRACEF_CBLK("block_free", cblk, "");
+
 	WARN_ON_ONCE(cblk->refcount != 0);
 	WARN_ON_ONCE(cblk->hashed != 0);
 	WARN_ON_ONCE(!list_empty(&cblk->submit_head));
@@ -142,6 +171,7 @@ static struct cached_block *del_first_pool_block(struct list_head *pool)
 static void unhash_cblk(struct block_cache_instance *inst, struct cached_block *cblk)
 {
 	if (cblk->hashed) {
+		DTRACEF_CBLK("block_unhash", cblk, "");
 		htable_delete(inst->cache_ht, cblk->bnr);
 		cblk->hashed = 0;
 		inst->nr_hashed--;
@@ -194,6 +224,8 @@ static void try_shrink(struct block_cache_instance *inst)
 	while ((cblk = clist_del_first_past_pct(inst, &inst->hot_fifo, HOT_FIFO_PCT) ?:
 		       clist_del_first_past_pct(inst, &inst->cold_fifo, COLD_FIFO_PCT))) {
 
+		DTRACEF_CBLK("block_shrink", cblk, "");
+
 		if (cblk->accessed) {
 			clist_add_tail(&cblk->fifo_head, &inst->cold_fifo);
 			cblk->accessed = 0;
@@ -235,6 +267,8 @@ static struct cached_block *lookup_or_alloc_cblk(struct block_cache_instance *in
 			cblk->bnr = bnr;
 			cblk->hashed = 1;
 
+			DTRACEF_CBLK("block_hash", cblk, "");
+
 			htable_insert(inst->cache_ht, bnr, (u64)cblk);
 			inst->nr_hashed++;
 			get_cblk(cblk);
@@ -265,6 +299,8 @@ static void io_completion(struct io_uring_cqe *cqe, struct utask_cqe_callback *c
 	struct block_cache_instance *inst = &global_block_cache_inst;
 	struct cached_block *cblk = container_of(cb, struct cached_block, cb);
 	int err;
+
+	DTRACEF_CBLK("block_io_complete", cblk, "res %d", cqe->res);
 
 	/* XXX error handling :) */
 	BUG_ON(cqe->res != NGNFS_BLOCK_SIZE);
@@ -330,6 +366,8 @@ static void submit_utask(void *data)
 						   NGNFS_BLOCK_SIZE,
 						   cblk->bnr << NGNFS_BLOCK_SHIFT);
 
+			DTRACEF_CBLK("block_io_submit", cblk, "");
+
 			inst->nr_in_flight++;
 			list_del_init(&cblk->submit_head);
 			/* submit list ref is transferred to io, put at completion */
@@ -380,10 +418,14 @@ void block_free_pool(struct list_head *pool)
 int block_lookup(u64 bnr, struct cached_block **cblk_ret)
 {
 	struct block_cache_instance *inst = &global_block_cache_inst;
+	int ret;
 
 	*cblk_ret = lookup_cblk(inst, bnr);
+	ret = *cblk_ret ? 0 : -ENOENT;
 
-	return *cblk_ret ? 0 : -ENOENT;
+	DTRACEF_CBLK("block_lookup", *cblk_ret, "ret %d", ret);
+
+	return ret;
 }
 
 int block_read_verify(u64 bnr, block_verify_fn_t verify_fn, void *verify_arg,
@@ -421,6 +463,8 @@ out:
 		put_cblk(cblk);
 		cblk = NULL;
 	}
+
+	DTRACEF_CBLK("block_read_verify", cblk, "ret %d", ret);
 
 	*cblk_ret = cblk;
 	return ret;
@@ -499,6 +543,8 @@ out:
 		put_cblk(cblk);
 		cblk = NULL;
 	}
+
+	DTRACEF_CBLK("block_create_dirty", cblk, "ret %d", ret);
 
 	*cblk_ret = cblk;
 	return ret;

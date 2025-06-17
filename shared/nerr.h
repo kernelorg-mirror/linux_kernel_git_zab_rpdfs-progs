@@ -4,6 +4,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static inline int strdup_nerr(char **ret, const char *str)
 {
@@ -60,6 +61,15 @@ static inline int strtoull_nerr(unsigned long long *ret, const char *restrict np
 	endptr = prepare_strtoX(endptr, &ourend);
 	*ret = strtoull(nptr, endptr, base);
 	return finish_strtoX(endptr);
+}
+
+static inline int fstat_nerr(int fd, struct stat *st)
+{
+	errno = 0;
+	if (fstat(fd, st))
+		return -errno;
+	else
+		return 0;
 }
 
 #endif

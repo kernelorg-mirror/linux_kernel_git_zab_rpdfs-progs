@@ -433,6 +433,8 @@ int net_send(struct sockaddr_in *addr, struct ngnfs_msg_header *hdr, void *ctl_b
 	if (data_page) {
 		ent->data_page = data_page;
 		get_page(data_page);
+	} else {
+		ent->data_page = NULL;
 	}
 
 	list_add_tail(&ent->head, &sock->send_queue);

@@ -8,6 +8,8 @@
 #include <poll.h>
 #include <sys/signalfd.h>
 
+#include "shared/valgrind_support.h"
+
 #include "utask/sigcb.h"
 #include "utask/utask.h"
 
@@ -40,6 +42,8 @@ static void signalfd_read_utask(void *data)
 	struct signalfd_siginfo ssi;
 	siginfo_t si;
 	ssize_t ret;
+
+	VGS_INIT_BUF(&ssi, sizeof(ssi));
 
 	while (!utask_am_canceled()) {
 

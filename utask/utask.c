@@ -9,6 +9,8 @@
 #include "shared/lk/compiler_attributes.h"
 #include "shared/lk/list.h"
 
+#include "shared/valgrind_support.h"
+
 #include "utask/utask.h"
 
 /*
@@ -70,6 +72,7 @@ struct utask {
 		      finished:1;
 	char *name;
 	u64 id;
+	VGS_DEFINE_STACK_ID(vg_stack_id);
 	struct utask *destroyer;
 	const char *sched_file;
 	const char *sched_func;
@@ -229,6 +232,8 @@ void utask_destroy(struct utask *tsk)
 			list_del_init(&tsk->run_head);
 		if (!list_empty(&tsk->wait_head))
 			list_del_init(&tsk->wait_head);
+
+		VGS_STACK_DEREGISTER(tsk->vg_stack_id);
 		free(tsk->stack);
 	}
 }
@@ -419,6 +424,7 @@ int utask_create_name_nowake(char *name, utask_fn_t fn, void *data, struct utask
 	tsk->finished = 0;
 	tsk->name = name;
 	tsk->id = inst->next_id++;
+	VGS_STACK_REGISTER(tsk->vg_stack_id, (unsigned long)stack, (unsigned long)tsk - 1);
 	tsk->destroyer = NULL;
 	tsk->fn = fn;
 	tsk->data = data;

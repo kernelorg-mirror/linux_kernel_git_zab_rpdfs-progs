@@ -18,6 +18,7 @@
 #include "shared/format-block.h"
 #include "shared/msg.h"
 #include "shared/string_wrappers.h"
+#include "shared/valgrind_support.h"
 
 #include "utask/net.h"
 #include "utask/utask.h"
@@ -341,6 +342,9 @@ static void recv_utask(void *data)
 		goto out;
 	}
 
+	VGS_INIT_BUF(&hdr, sizeof(hdr));
+	VGS_INIT_BUF(ctl_buf, NGNFS_BLOCK_SIZE);
+
 	for (;;) {
 		ret = recv_waiter(sock->fd, &hdr, sizeof(struct ngnfs_msg_header), 0);
 		if (ret <= 0)
@@ -363,6 +367,7 @@ static void recv_utask(void *data)
 					ret = -ENOMEM;
 					goto out;
 				}
+				VGS_INIT_BUF(page_address(data_page), PAGE_SIZE);
 			}
 
 			iov[nr].iov_base = page_address(data_page);
@@ -462,6 +467,8 @@ static void accept_utask(void *data)
 	socklen_t socklen;
 	int ret;
 	int fd;
+
+	VGS_INIT_BUF(&addr, sizeof(addr));
 
 	for (;;) {
 		socklen = sizeof(struct sockaddr_in);

@@ -26,7 +26,7 @@ static void help(int argc, char **argv)
 {
 	struct cli_command *cmd;
 
-	printf("ngnfs-cli <command> [command options..]\n\n");
+	printf("rpdfs-cli <command> [command options..]\n\n");
 
 	printf("available commands:\n");
 	for_each_command(cmd) {

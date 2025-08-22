@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_CLI_CLI_H
-#define NGNFS_CLI_CLI_H
+#ifndef RPDFS_CLI_CLI_H
+#define RPDFS_CLI_CLI_H
 
 #include "shared/lk/list.h"
 

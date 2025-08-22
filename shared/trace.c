@@ -76,7 +76,7 @@ int trace_register_thread(void)
 {
 	struct trace_thread_private *tpriv = NULL;
 	struct trace_info *trinf = global_trinf;
-	struct ngnfs_trace_thread *tthr;
+	struct rpdfs_trace_thread *tthr;
 	void *addr = MAP_FAILED;
 	off_t page_off;
 	off_t off;
@@ -177,7 +177,7 @@ static void cpuid(u32 inp, struct cpuid_result *res)
  * This is obviously wildly intel specific.  We'll need to flesh this
  * out for other platforms with a generic fallback.
  */
-static void describe_ticks(struct ngnfs_trace_file *tfi)
+static void describe_ticks(struct rpdfs_trace_file *tfi)
 {
 	struct cpuid_result res;
 	ktime_t begin_ns;
@@ -219,16 +219,16 @@ static void describe_ticks(struct ngnfs_trace_file *tfi)
  *
  * The userspace tracing layer is a little different than other layers
  * that are shared with the kernel module.  It inherits its interface
- * from the kernel trace_ngnfs_* interface which has no
+ * from the kernel trace_rpdfs_* interface which has no
  * per-(filesystem,mount,superblock) state.  It's global.  So our
- * trace_info isn't stored in the ngnfs_fs_info, it's also global.  That
+ * trace_info isn't stored in the rpdfs_fs_info, it's also global.  That
  * doesn't really matter for our userspace processes which only ever
  * have one filesystem but it explains why this setup doesn't take an
  * nfi argument and why we have an unconventional global_trinf pointer.
  */
 int trace_setup(char *trace_path)
 {
-	struct ngnfs_trace_file *tfi = NULL;
+	struct rpdfs_trace_file *tfi = NULL;
 	struct trace_info *trinf;
 	int ret;
 
@@ -252,7 +252,7 @@ int trace_setup(char *trace_path)
 		goto out;
 	}
 
-	tfi->endian = NGNFS_TRACE_NATIVE_ENDIAN;
+	tfi->endian = RPDFS_TRACE_NATIVE_ENDIAN;
 	tfi->synchro_tick = 0;
 	tfi->synchro_nsec = 0;
 	tfi->nsec_per_tick_num = 1;

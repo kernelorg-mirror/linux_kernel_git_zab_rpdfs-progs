@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /* const.h: Macros for dealing with constants.  */
 
-#ifndef NGNFS_SHARED_LK_CONST_H
-#define NGNFS_SHARED_LK_CONST_H
+#ifndef RPDFS_SHARED_LK_CONST_H
+#define RPDFS_SHARED_LK_CONST_H
 
 /* Some constant macros are used in both assembler and
  * C code.  Therefore we cannot annotate them always with

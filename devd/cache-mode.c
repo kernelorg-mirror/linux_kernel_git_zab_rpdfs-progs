@@ -86,7 +86,7 @@ struct client_mode {
  */
 static inline bool compatible_modes(u8 a, u8 b)
 {
-	return a != NGNFS_CACHE_MODE_WRITE && b != NGNFS_CACHE_MODE_WRITE;
+	return a != RPDFS_CACHE_MODE_WRITE && b != RPDFS_CACHE_MODE_WRITE;
 }
 
 /*
@@ -96,7 +96,7 @@ static inline bool compatible_modes(u8 a, u8 b)
  */
 static inline u8 most_compatible(u8 request)
 {
-	return request == NGNFS_CACHE_MODE_WRITE ? NGNFS_CACHE_MODE_NONE : NGNFS_CACHE_MODE_READ;
+	return request == RPDFS_CACHE_MODE_WRITE ? RPDFS_CACHE_MODE_NONE : RPDFS_CACHE_MODE_READ;
 }
 
 static inline struct client_mode *cli_container(struct rb_node *node)
@@ -165,10 +165,10 @@ static struct client_mode *get_client_mode(struct cache_mode_instance *inst, u64
 	while (*node) {
 		parent = *node;
 		cli = container_of(*node, struct client_mode, node);
-		cmp = ngnfs_compare(bnr, cli->bnr) ?:
-		      ngnfs_compare(ntohl(addr->sin_addr.s_addr),
+		cmp = rpdfs_compare(bnr, cli->bnr) ?:
+		      rpdfs_compare(ntohl(addr->sin_addr.s_addr),
 				    ntohl(cli->addr.sin_addr.s_addr)) ?:
-		      ngnfs_compare(ntohs(addr->sin_port), ntohs(cli->addr.sin_port));
+		      rpdfs_compare(ntohs(addr->sin_port), ntohs(cli->addr.sin_port));
 
 		if (cmp < 0) {
 			if (cli->bnr == bnr)
@@ -261,10 +261,10 @@ static struct client_mode *find_processing_request(struct cache_mode_instance *i
  */
 static int send_read_result(struct client_mode *cli, u64 bnr, u8 old_mode, u8 mode)
 {
-	struct ngnfs_msg_block_read_result rr;
+	struct rpdfs_msg_block_read_result rr;
 	struct cached_block *cblk = NULL;
 	struct page *data_page = NULL;
-	struct ngnfs_msg_header hdr;
+	struct rpdfs_msg_header hdr;
 	int ret;
 	int err;
 
@@ -276,19 +276,19 @@ static int send_read_result(struct client_mode *cli, u64 bnr, u8 old_mode, u8 mo
 
 	hdr.data_size = 0;
 	hdr.ctl_size = sizeof(rr);
-	hdr.type = NGNFS_MSG_BLOCK_READ_RESULT;
+	hdr.type = RPDFS_MSG_BLOCK_READ_RESULT;
 	data_page = NULL;
 
-	if (old_mode == NGNFS_CACHE_MODE_NONE && mode != NGNFS_CACHE_MODE_NONE && !cli->no_data) {
+	if (old_mode == RPDFS_CACHE_MODE_NONE && mode != RPDFS_CACHE_MODE_NONE && !cli->no_data) {
 
 		err = bstore_read(bnr, &cblk);
 		if (err < 0) {
 			/* send error on read io error */
-			rr.mode = NGNFS_CACHE_MODE_NULL;
-			rr.err = ngnfs_msg_err(err);
+			rr.mode = RPDFS_CACHE_MODE_NULL;
+			rr.err = rpdfs_msg_err(err);
 		} else {
 			/* and include block data if they need it */
-			hdr.data_size = cpu_to_le16(NGNFS_BLOCK_SIZE);
+			hdr.data_size = cpu_to_le16(RPDFS_BLOCK_SIZE);
 			data_page = block_data_page(cblk);
 		}
 	}
@@ -307,8 +307,8 @@ static int send_read_result(struct client_mode *cli, u64 bnr, u8 old_mode, u8 mo
  */
 static int send_mode_set(struct client_mode *cli, u64 bnr, u8 old_mode, u8 mode)
 {
-	struct ngnfs_msg_cache_mode cm;
-	struct ngnfs_msg_header hdr;
+	struct rpdfs_msg_cache_mode cm;
+	struct rpdfs_msg_header hdr;
 
 	cm.bnr = cpu_to_le64(bnr);
 	cm.mode = mode;
@@ -316,7 +316,7 @@ static int send_mode_set(struct client_mode *cli, u64 bnr, u8 old_mode, u8 mode)
 
 	hdr.data_size = 0;
 	hdr.ctl_size = sizeof(cm);
-	hdr.type = NGNFS_MSG_BLOCK_MODE_SET;
+	hdr.type = RPDFS_MSG_BLOCK_MODE_SET;
 
 	return net_send(&cli->addr, &hdr, &cm, NULL);
 }
@@ -384,7 +384,7 @@ static int process_requests(struct cache_mode_instance *inst, u64 bnr)
 		/* set more restrictive while sending, ack rx sets less restrictive */
 		if (req->request > req->mode)
 			req->mode = req->request;
-		req->request = NGNFS_CACHE_MODE_NULL;
+		req->request = RPDFS_CACHE_MODE_NULL;
 		req->processing = 0;
 	}
 
@@ -419,8 +419,8 @@ int cache_mode_request(struct sockaddr_in *addr, u64 bnr, u8 mode, bool no_data)
 	 * deal with that racing with us adopting a more exclusive mode
 	 * as we send.)
 	 */
-	if (cli->mode == NGNFS_CACHE_MODE_NULL)
-		cli->mode = NGNFS_CACHE_MODE_NONE;
+	if (cli->mode == RPDFS_CACHE_MODE_NULL)
+		cli->mode = RPDFS_CACHE_MODE_NONE;
 
 	/* client must only have one request in flight at a time */
 	if (cli->request) {
@@ -462,9 +462,9 @@ int cache_mode_ack(struct sockaddr_in *addr, u64 bnr, u8 mode)
 	/* sending set more restrictive mode, we set less restrictive */
 	if (cli->sent < cli->mode)
 		cli->mode = cli->sent;
-	cli->sent = NGNFS_CACHE_MODE_NULL;
+	cli->sent = RPDFS_CACHE_MODE_NULL;
 
-	if (!cli->request && cli->mode == NGNFS_CACHE_MODE_NONE)
+	if (!cli->request && cli->mode == RPDFS_CACHE_MODE_NONE)
 		free_client_mode(inst, cli);
 
 	ret = process_requests(inst, bnr);

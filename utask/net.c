@@ -71,7 +71,7 @@ struct net_socket {
  */
 struct net_send_entry {
 	struct list_head head;
-	struct ngnfs_msg_header hdr;
+	struct rpdfs_msg_header hdr;
 	void *ctl_buf;
 	struct page *data_page;
 };
@@ -190,9 +190,9 @@ static struct net_socket *get_peer_sock(struct net_instance *inst, struct sockad
 	while (*node) {
 		parent = *node;
 		sock = container_of(*node, struct net_socket, node);
-		cmp = ngnfs_compare(ntohl(addr->sin_addr.s_addr),
+		cmp = rpdfs_compare(ntohl(addr->sin_addr.s_addr),
 				    ntohl(sock->addr.sin_addr.s_addr)) ?:
-		      ngnfs_compare(ntohs(addr->sin_port), ntohs(sock->addr.sin_port));
+		      rpdfs_compare(ntohs(addr->sin_port), ntohs(sock->addr.sin_port));
 
 		if (cmp < 0)
 			node = &(*node)->rb_left;
@@ -299,7 +299,7 @@ static void send_utask(void *data)
 
 			nr = 0;
 			iov[nr].iov_base = &ent->hdr;
-			iov[nr++].iov_len = sizeof(struct ngnfs_msg_header);
+			iov[nr++].iov_len = sizeof(struct rpdfs_msg_header);
 			if (ent->hdr.ctl_size) {
 				iov[nr].iov_base = ent->ctl_buf;
 				iov[nr++].iov_len = ent->hdr.ctl_size;
@@ -329,29 +329,29 @@ static void recv_utask(void *data)
 	struct net_instance *inst = &global_net_inst;
 	struct net_socket *sock = data;
 	struct page *data_page = NULL;
-	struct ngnfs_msg_header hdr;
+	struct rpdfs_msg_header hdr;
 	void *ctl_buf = NULL;
 	struct iovec iov[2];
 	struct msghdr msg;
 	int ret;
 	int nr;
 
-	ctl_buf = malloc(NGNFS_BLOCK_SIZE);
+	ctl_buf = malloc(RPDFS_BLOCK_SIZE);
 	if (!ctl_buf) {
 		ret = -ENOMEM;
 		goto out;
 	}
 
 	VGS_INIT_BUF(&hdr, sizeof(hdr));
-	VGS_INIT_BUF(ctl_buf, NGNFS_BLOCK_SIZE);
+	VGS_INIT_BUF(ctl_buf, RPDFS_BLOCK_SIZE);
 
 	for (;;) {
-		ret = recv_waiter(sock->fd, &hdr, sizeof(struct ngnfs_msg_header), 0);
+		ret = recv_waiter(sock->fd, &hdr, sizeof(struct rpdfs_msg_header), 0);
 		if (ret <= 0)
 			goto out;
 
 		/* check header */
-		ret = ngnfs_msg_verify_header(&hdr);
+		ret = rpdfs_msg_verify_header(&hdr);
 		if (ret < 0)
 			goto out;
 
@@ -407,7 +407,7 @@ out:
  * This interface only allows sending to connections that were
  * previously created with _connect or _accept.
  */
-int net_send(struct sockaddr_in *addr, struct ngnfs_msg_header *hdr, void *ctl_buf,
+int net_send(struct sockaddr_in *addr, struct rpdfs_msg_header *hdr, void *ctl_buf,
 	     struct page *data_page)
 {
 	struct net_instance *inst = &global_net_inst;

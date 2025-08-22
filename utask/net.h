@@ -8,10 +8,10 @@
 
 struct sockaddr_in;
 
-typedef int (*net_recv_fn_t)(struct sockaddr_in *addr, struct ngnfs_msg_header *hdr,
+typedef int (*net_recv_fn_t)(struct sockaddr_in *addr, struct rpdfs_msg_header *hdr,
 			     void *ctl_buf, struct page *data_page);
 
-int net_send(struct sockaddr_in *addr, struct ngnfs_msg_header *hdr, void *ctl_buf,
+int net_send(struct sockaddr_in *addr, struct rpdfs_msg_header *hdr, void *ctl_buf,
 	     struct page *data_page);
 
 int net_listen(struct sockaddr_in *addr);

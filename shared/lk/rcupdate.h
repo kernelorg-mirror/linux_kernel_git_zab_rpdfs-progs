@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_LK_RCUPDATE_H
-#define NGNFS_SHARED_LK_RCUPDATE_H
+#ifndef RPDFS_SHARED_LK_RCUPDATE_H
+#define RPDFS_SHARED_LK_RCUPDATE_H
 
 #include "shared/urcu.h"
 

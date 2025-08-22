@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_LK_STDDEF_H
-#define NGNFS_SHARED_LK_STDDEF_H
+#ifndef RPDFS_SHARED_LK_STDDEF_H
+#define RPDFS_SHARED_LK_STDDEF_H
 
 #include <unistd.h>
 #include <stddef.h>

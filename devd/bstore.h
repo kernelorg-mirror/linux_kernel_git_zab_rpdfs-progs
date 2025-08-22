@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_DEVD_BSTORE_H
-#define NGNFS_DEVD_BSTORE_H
+#ifndef RPDFS_DEVD_BSTORE_H
+#define RPDFS_DEVD_BSTORE_H
 
 #include "utask/block.h"
 

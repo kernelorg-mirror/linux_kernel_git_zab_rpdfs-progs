@@ -25,7 +25,7 @@
 #include "shared/format-block.h"
 #include "shared/unbuf.h"
 
-struct ngnfs_undo_buf {
+struct rpdfs_undo_buf {
 	void *base;
 	void *page;
 	void *buf;
@@ -40,9 +40,9 @@ struct ngnfs_undo_buf {
 #define CHUNK_SHIFT	6
 #define CHUNK_BYTES	(1 << CHUNK_SHIFT)
 
-int ngnfs_unbuf_alloc(void *base, size_t bytes, struct ngnfs_undo_buf **unbuf_ret)
+int rpdfs_unbuf_alloc(void *base, size_t bytes, struct rpdfs_undo_buf **unbuf_ret)
 {
-	struct ngnfs_undo_buf *unbuf;
+	struct rpdfs_undo_buf *unbuf;
 	struct page *page;
 	size_t longs;
 	size_t bits;
@@ -58,7 +58,7 @@ int ngnfs_unbuf_alloc(void *base, size_t bytes, struct ngnfs_undo_buf **unbuf_re
 	bits = DIV_ROUND_UP(bytes, CHUNK_BYTES);
 	longs = DIV_ROUND_UP(bits, BITS_PER_LONG);
 
-	unbuf = kmalloc(offsetof(struct ngnfs_undo_buf, bitmap[longs]), GFP_NOFS);
+	unbuf = kmalloc(offsetof(struct rpdfs_undo_buf, bitmap[longs]), GFP_NOFS);
 	if (unbuf) {
 		page = alloc_page(GFP_NOFS);
 		if (!page) {
@@ -82,7 +82,7 @@ int ngnfs_unbuf_alloc(void *base, size_t bytes, struct ngnfs_undo_buf **unbuf_re
 	return ret;
 }
 
-void ngnfs_unbuf_free(struct ngnfs_undo_buf *unbuf)
+void rpdfs_unbuf_free(struct rpdfs_undo_buf *unbuf)
 {
 	if (unbuf) {
 		__free_page(unbuf->page);
@@ -90,7 +90,7 @@ void ngnfs_unbuf_free(struct ngnfs_undo_buf *unbuf)
 	}
 }
 
-void ngnfs_unbuf_save(struct ngnfs_undo_buf *unbuf, void *ptr, size_t size)
+void rpdfs_unbuf_save(struct rpdfs_undo_buf *unbuf, void *ptr, size_t size)
 {
 	off_t off;
 	int last;
@@ -115,7 +115,7 @@ void ngnfs_unbuf_save(struct ngnfs_undo_buf *unbuf, void *ptr, size_t size)
 	}
 }
 
-void ngnfs_unbuf_restore(struct ngnfs_undo_buf *unbuf)
+void rpdfs_unbuf_restore(struct rpdfs_undo_buf *unbuf)
 {
 	size_t off;
 	int bit;

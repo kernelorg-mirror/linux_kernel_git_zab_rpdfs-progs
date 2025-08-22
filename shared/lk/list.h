@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_LK_LIST_H
-#define NGNFS_SHARED_LK_LIST_H
+#ifndef RPDFS_SHARED_LK_LIST_H
+#define RPDFS_SHARED_LK_LIST_H
 
 /*
  * This is the kernel's list.h after:

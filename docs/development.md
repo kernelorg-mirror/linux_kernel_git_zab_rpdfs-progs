@@ -4,11 +4,11 @@ Compile the code with make. You will need librcu and sparse installed.
 The sparse package tends to depend on a lot of other packages, so you
 may want to build and install your own.
 
-ngnfs currently only runs in userspace. There are two components: the
+rpdfs currently only runs in userspace. There are two components: the
 devd process and the debugfs process.
 
 The devd process listens on a socket for block IO requests. The
-debugfs process reads commands from stdin and turns them into ngnfs
+debugfs process reads commands from stdin and turns them into rpdfs
 operations, which generate IO requests to the devd process. Thus you
 need to tell the devd process where to listen and the debugfs process
 where to connect. The devd process also needs to know where its
@@ -19,13 +19,13 @@ Example invocation:
 
 ```
 	$ truncate -s 1G ~/tmp/dev
-	$ ./devd/ngnfs-devd -d ~/tmp/dev -l 127.0.0.1:8081 -t /tmp/trace_devd
+	$ ./devd/rpdfs-devd -d ~/tmp/dev -l 127.0.0.1:8081 -t /tmp/trace_devd
 ```
 
 In another terminal:
 
 ```
-	$ ./cli/ngnfs-cli debugfs -d 127.0.0.1:8081 -t /tmp/trace_debugfs
+	$ ./cli/rpdfs-cli debugfs -d 127.0.0.1:8081 -t /tmp/trace_debugfs
 	<1> $ mkfs
 	<1> $ stat
 ```
@@ -52,7 +52,7 @@ more apparent.
 
 This is for userspace implementations of kernel interfaces.  This both
 lets us use reasonably stand-alone kernel interfaces (list.h) in
-userspace as well as share ngnfs code with the kernel module by
+userspace as well as share rpdfs code with the kernel module by
 providing implementations of more complicated runtime services (RCU hash
 tables, work queues).
 

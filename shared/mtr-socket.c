@@ -23,7 +23,7 @@
  */
 
 struct socket_peer_info {
-	struct ngnfs_fs_info *nfi;
+	struct rpdfs_fs_info *nfi;
 	struct sockaddr_in addr;
 	wait_queue_head_t waitq;
 	struct cds_wfcq_head send_q_head;
@@ -41,7 +41,7 @@ struct socket_send_buf {
 	struct cds_wfcq_node q_node;
 	size_t size;
 	/* allocated packet contents to send start with header */
-	struct ngnfs_msg_header hdr;
+	struct rpdfs_msg_header hdr;
 };
 
 /*
@@ -167,14 +167,14 @@ static void socket_recv_thread(struct thread *thr, void *arg)
 {
 	struct socket_peer_info *pinf = arg;
 	struct page *ctl_page = NULL;
-	struct ngnfs_msg_header hdr;
-	struct ngnfs_msg_desc mdesc;
+	struct rpdfs_msg_header hdr;
+	struct rpdfs_msg_desc mdesc;
 	struct iovec iov[3];
 	int iovcnt;
 	int ret;
 
 	/* we'll want sub page alloc */
-	BUILD_BUG_ON(PAGE_SIZE != NGNFS_MSG_MAX_DATA_SIZE);
+	BUILD_BUG_ON(PAGE_SIZE != RPDFS_MSG_MAX_DATA_SIZE);
 
 	ctl_page = alloc_page(GFP_NOFS);
 	if (!ctl_page) {
@@ -193,7 +193,7 @@ static void socket_recv_thread(struct thread *thr, void *arg)
 		if (ret < 0)
 			break;
 
-		ret = ngnfs_msg_verify_header(&hdr);
+		ret = rpdfs_msg_verify_header(&hdr);
 		if (ret < 0)
 			break;
 
@@ -220,7 +220,7 @@ static void socket_recv_thread(struct thread *thr, void *arg)
 		if (ret < 0)
 			break;
 
-		ret = ngnfs_msg_recv(pinf->nfi, &mdesc);
+		ret = rpdfs_msg_recv(pinf->nfi, &mdesc);
 
 		if (mdesc.data_page) {
 			put_page(mdesc.data_page);
@@ -321,7 +321,7 @@ static void socket_listen_thread(struct thread *thr, void *arg)
 		}
 
 		ret = set_connected_options(fd) ?:
-		      ngnfs_msg_accept(pinf->nfi, &addr, &fd);
+		      rpdfs_msg_accept(pinf->nfi, &addr, &fd);
 		if (ret < 0) {
 			close(fd);
 			continue;
@@ -334,7 +334,7 @@ static void socket_listen_thread(struct thread *thr, void *arg)
 	}
 }
 
-static void socket_init_peer(void *info, struct ngnfs_fs_info *nfi)
+static void socket_init_peer(void *info, struct rpdfs_fs_info *nfi)
 {
 	struct socket_peer_info *pinf = info;
 
@@ -399,7 +399,7 @@ static int socket_start(void *info, struct sockaddr_in *addr, void *accepted)
  * used to accept new connections.  The listen_thread is started as the
  * recv_thr and the send queue is never used.
  */
-static void *socket_start_listen(struct ngnfs_fs_info *nfi, struct sockaddr_in *addr)
+static void *socket_start_listen(struct rpdfs_fs_info *nfi, struct sockaddr_in *addr)
 {
 	struct socket_peer_info *pinf = NULL;
 	int optval;
@@ -455,7 +455,7 @@ out:
 	return pinf;
 }
 
-static void socket_stop_listen(struct ngnfs_fs_info *nfi, void *info)
+static void socket_stop_listen(struct rpdfs_fs_info *nfi, void *info)
 {
 	struct socket_peer_info *pinf = info;
 
@@ -471,7 +471,7 @@ static void socket_stop_listen(struct ngnfs_fs_info *nfi, void *info)
  * thread.  We copy the send page today but could use a page reference
  * in the future.
  */
-static int socket_send(void *info, struct ngnfs_msg_desc *mdesc)
+static int socket_send(void *info, struct rpdfs_msg_desc *mdesc)
 {
 	struct socket_peer_info *pinf = info;
 	struct socket_send_buf *sbuf;
@@ -492,7 +492,7 @@ static int socket_send(void *info, struct ngnfs_msg_desc *mdesc)
 
 	/* XXX crc not used yet */
 	cds_wfcq_node_init(&sbuf->q_node);
-	sbuf->size = sizeof(struct ngnfs_msg_header) + mdesc->ctl_size + mdesc->data_size;
+	sbuf->size = sizeof(struct rpdfs_msg_header) + mdesc->ctl_size + mdesc->data_size;
 	sbuf->hdr.data_size = cpu_to_le16(mdesc->data_size);
 	sbuf->hdr.ctl_size = mdesc->ctl_size;
 	sbuf->hdr.type = mdesc->type;
@@ -512,7 +512,7 @@ out:
 	return ret;
 }
 
-struct ngnfs_msg_transport_ops ngnfs_mtr_socket_ops = {
+struct rpdfs_msg_transport_ops rpdfs_mtr_socket_ops = {
 	.start_listen = socket_start_listen,
 	.stop_listen = socket_stop_listen,
 

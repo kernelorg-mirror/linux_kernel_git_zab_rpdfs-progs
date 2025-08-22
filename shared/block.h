@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_BLOCK_H
-#define NGNFS_SHARED_BLOCK_H
+#ifndef RPDFS_SHARED_BLOCK_H
+#define RPDFS_SHARED_BLOCK_H
 
 #include <stdlib.h>
 
-struct ngnfs_block;
+struct rpdfs_block;
 
 #include "shared/fs_info.h"
 #include "shared/lk/gfp.h"
@@ -56,18 +56,18 @@ typedef enum {
 /* these flags are mutually exclusive */
 #define NBF_RW_EXCL	(NBF_READ | NBF_WRITE)
 
-struct ngnfs_block *ngnfs_block_get(struct ngnfs_fs_info *nfi, u64 bnr, nbf_t nbf);
-void ngnfs_block_put(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl, nbf_t nbf);
-void *ngnfs_block_buf(struct ngnfs_block *bl);
-struct page *ngnfs_block_page(struct ngnfs_block *bl);
-void ngnfs_block_dirty_limit_wait(struct ngnfs_fs_info *nfi);
+struct rpdfs_block *rpdfs_block_get(struct rpdfs_fs_info *nfi, u64 bnr, nbf_t nbf);
+void rpdfs_block_put(struct rpdfs_fs_info *nfi, struct rpdfs_block *bl, nbf_t nbf);
+void *rpdfs_block_buf(struct rpdfs_block *bl);
+struct page *rpdfs_block_page(struct rpdfs_block *bl);
+void rpdfs_block_dirty_limit_wait(struct rpdfs_fs_info *nfi);
 
-int ngnfs_block_dirty_begin(struct ngnfs_fs_info *nfi, struct list_head *list, ssize_t off);
-void ngnfs_block_dirty_end(struct ngnfs_fs_info *nfi, struct list_head *list, ssize_t off);
-int ngnfs_block_sync(struct ngnfs_fs_info *nfi);
+int rpdfs_block_dirty_begin(struct rpdfs_fs_info *nfi, struct list_head *list, ssize_t off);
+void rpdfs_block_dirty_end(struct rpdfs_fs_info *nfi, struct list_head *list, ssize_t off);
+int rpdfs_block_sync(struct rpdfs_fs_info *nfi);
 
-int ngnfs_block_setup(struct ngnfs_fs_info *nfi, int queue_depth);
-void ngnfs_block_destroy(struct ngnfs_fs_info *nfi);
+int rpdfs_block_setup(struct rpdfs_fs_info *nfi, int queue_depth);
+void rpdfs_block_destroy(struct rpdfs_fs_info *nfi);
 
 #endif
 

@@ -6,7 +6,7 @@
 # backend tracing mechanism.
 #
 # The presented interface follows the kernel's TRACE_EVENT defintions in
-# the form of trace_ngnfs_#foo
+# the form of trace_rpdfs_#foo
 #
 # describe userspace
 #
@@ -85,7 +85,7 @@ BEGIN {
 		args = (args comma type " " arg)
 
 		# struct fields
-		struct = "struct trace_ngnfs_" name "_event"
+		struct = "struct trace_rpdfs_" name "_event"
 		fields = (fields newline "  " type " " arg ";")
 
 		# assignment
@@ -108,10 +108,10 @@ BEGIN {
 		   fields "\n"							\
 		"};\n"
 
-	print "static inline void trace_ngnfs_" name "(" args ")\n"		\
+	print "static inline void trace_rpdfs_" name "(" args ")\n"		\
 		"{\n"								\
 		"  " struct " *ev;\n"						\
-		"  ev = trace_entry_ptr(" id ", sizeof(struct ngnfs_trace_event) + sizeof(" struct "));\n"		\
+		"  ev = trace_entry_ptr(" id ", sizeof(struct rpdfs_trace_event) + sizeof(" struct "));\n"		\
 		   assign "\n"							\
 		"}\n"
 

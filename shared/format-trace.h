@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_FORMAT_TRACE_H
-#define NGNFS_SHARED_FORMAT_TRACE_H
+#ifndef RPDFS_SHARED_FORMAT_TRACE_H
+#define RPDFS_SHARED_FORMAT_TRACE_H
 
 /*
  * The userspace trace file is organized into chunks.  The first chunk
@@ -27,7 +27,7 @@
 
 #define TRACE_THREAD_SIZE	(TRACE_CHUNK_SIZE + TRACE_BUF_SIZE)
 
-struct ngnfs_trace_file {
+struct rpdfs_trace_file {
 	__u64 endian;
 	__u64 synchro_tick;
 	__u64 synchro_nsec;
@@ -35,9 +35,9 @@ struct ngnfs_trace_file {
 	__u64 nsec_per_tick_denom;
 };
 
-#define NGNFS_TRACE_NATIVE_ENDIAN 0xfedcba9876543210
+#define RPDFS_TRACE_NATIVE_ENDIAN 0xfedcba9876543210
 
-struct ngnfs_trace_thread {
+struct rpdfs_trace_thread {
 	__u64 tid;
 };
 
@@ -51,7 +51,7 @@ struct ngnfs_trace_thread {
  * (potentially partial) terminating header after an event if its
  * aligned size doesn't fill the chunk.
  */
-struct ngnfs_trace_event {
+struct rpdfs_trace_event {
 	__u16 id;
 	__u16 size;
 	__u32 _pad;

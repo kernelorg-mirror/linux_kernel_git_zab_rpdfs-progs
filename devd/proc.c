@@ -27,7 +27,7 @@
  */
 struct proc_request {
 	struct sockaddr_in addr;
-	struct ngnfs_msg_header hdr;
+	struct rpdfs_msg_header hdr;
 	void *ctl_buf;
 	struct page *data_page;
 };
@@ -50,12 +50,12 @@ static void free_proc_request(struct proc_request *preq)
 static void block_read_utask(void *data)
 {
 	struct proc_request *preq = data;
-	struct ngnfs_msg_block_read *br = preq->ctl_buf;
+	struct rpdfs_msg_block_read *br = preq->ctl_buf;
 	const u64 bnr = le64_to_cpu(br->bnr);
 	int ret;
 
 	ret = cache_mode_request(&preq->addr, bnr, br->mode,
-				 !!(le64_to_cpu(br->flags) & NGNFS_MSG_BLOCK_READ_FLAG_NO_DATA));
+				 !!(le64_to_cpu(br->flags) & RPDFS_MSG_BLOCK_READ_FLAG_NO_DATA));
 	BUG_ON(ret);
 
 	free_proc_request(preq);
@@ -71,10 +71,10 @@ static void block_read_utask(void *data)
 static void block_write_utask(void *data)
 {
 	struct proc_request *preq = data;
-	struct ngnfs_msg_block_write *bw = preq->ctl_buf;
-	struct ngnfs_msg_block_write_result wr;
+	struct rpdfs_msg_block_write *bw = preq->ctl_buf;
+	struct rpdfs_msg_block_write_result wr;
 	const u64 bnr = le64_to_cpu(bw->bnr);
-	struct ngnfs_msg_header hdr;
+	struct rpdfs_msg_header hdr;
 	int ret;
 
 	ret = bstore_write(bnr, preq->data_page);
@@ -87,12 +87,12 @@ static void block_write_utask(void *data)
 		ret = 0;
 send:
 	wr.bnr = bw->bnr;
-	wr.err = ngnfs_msg_err(ret);
+	wr.err = rpdfs_msg_err(ret);
 	memset_zero_sizeof(wr._pad);
 
 	hdr.data_size = 0;
 	hdr.ctl_size = sizeof(wr);
-	hdr.type = NGNFS_MSG_BLOCK_WRITE_RESULT;
+	hdr.type = RPDFS_MSG_BLOCK_WRITE_RESULT;
 
 	ret = net_send(&preq->addr, &hdr, &wr, NULL);
 	BUG_ON(ret != 0); /* XXX reconnect? timeout? evict? */
@@ -111,7 +111,7 @@ send:
 static void block_mode_ack_utask(void *data)
 {
 	struct proc_request *preq = data;
-	struct ngnfs_msg_cache_mode *cm = preq->ctl_buf;
+	struct rpdfs_msg_cache_mode *cm = preq->ctl_buf;
 	const u64 bnr = le64_to_cpu(cm->bnr);
 	int ret;
 
@@ -124,15 +124,15 @@ static void block_mode_ack_utask(void *data)
 }
 
 static utask_fn_t proc_utask_fns[] = {
-	[NGNFS_MSG_BLOCK_READ] = block_read_utask,
-	[NGNFS_MSG_BLOCK_WRITE] = block_write_utask,
-	[NGNFS_MSG_BLOCK_MODE_ACK] = block_mode_ack_utask,
+	[RPDFS_MSG_BLOCK_READ] = block_read_utask,
+	[RPDFS_MSG_BLOCK_WRITE] = block_write_utask,
+	[RPDFS_MSG_BLOCK_MODE_ACK] = block_mode_ack_utask,
 };
 
 /*
  * This is called within a utask.
  */
-int proc_recv(struct sockaddr_in *addr, struct ngnfs_msg_header *hdr, void *ctl_buf,
+int proc_recv(struct sockaddr_in *addr, struct rpdfs_msg_header *hdr, void *ctl_buf,
 	      struct page *data_page)
 {
 	struct proc_request *preq;

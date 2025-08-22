@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_LK_COMPILER_ATTRIBUTES_H
-#define NGNFS_SHARED_LK_COMPILER_ATTRIBUTES_H
+#ifndef RPDFS_SHARED_LK_COMPILER_ATTRIBUTES_H
+#define RPDFS_SHARED_LK_COMPILER_ATTRIBUTES_H
 
 #ifndef __always_inline
 #define __always_inline                 inline __attribute__((__always_inline__))

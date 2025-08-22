@@ -53,7 +53,7 @@ static struct option_more mount_moreopts[] = {
 static int parse_mount_opt(int c, char *str, void *arg)
 {
 	struct mount_options *opts = arg;
-	struct ngnfs_manifest_addr_head *ahead;
+	struct rpdfs_manifest_addr_head *ahead;
 	int ret = -EINVAL;
 
 	switch(c) {
@@ -64,7 +64,7 @@ static int parse_mount_opt(int c, char *str, void *arg)
 			goto out;
 		}
 
-		ahead = malloc(sizeof(struct ngnfs_manifest_addr_head));
+		ahead = malloc(sizeof(struct rpdfs_manifest_addr_head));
 		if (!ahead) {
 			ret = -ENOMEM;
 			goto out;
@@ -91,15 +91,15 @@ out:
 
 /*
  * This userspace "mount" helper is meant to capture all the boilerplate
- * client setup that's needed before working with an ngnfs system.  It's
+ * client setup that's needed before working with an rpdfs system.  It's
  * meant to be run from a setup/monitoring thread which will then sit in
  * thread_sigwait until shutdown when it will call unmount.
  */
-int ngnfs_mount(struct ngnfs_fs_info *nfi, int argc, char **argv)
+int rpdfs_mount(struct rpdfs_fs_info *nfi, int argc, char **argv)
 {
 	struct mount_options opts = { .addr_list = LIST_HEAD_INIT(opts.addr_list), };
-	struct ngnfs_manifest_addr_head *ahead;
-	struct ngnfs_manifest_addr_head *tmp;
+	struct rpdfs_manifest_addr_head *ahead;
+	struct rpdfs_manifest_addr_head *tmp;
 	int ret;
 
 	ret = getopt_long_more(argc, argv, mount_moreopts, ARRAY_SIZE(mount_moreopts),
@@ -114,11 +114,11 @@ int ngnfs_mount(struct ngnfs_fs_info *nfi, int argc, char **argv)
 		goto out;
 	}
 
-	ret = ngnfs_manifest_setup(nfi, &opts.addr_list, opts.nr_addrs) ?:
-	      ngnfs_msg_setup(nfi, &ngnfs_mtr_socket_ops, NULL, NULL) ?:
-	      ngnfs_block_setup(nfi, 32 /* XXX shrug */);
+	ret = rpdfs_manifest_setup(nfi, &opts.addr_list, opts.nr_addrs) ?:
+	      rpdfs_msg_setup(nfi, &rpdfs_mtr_socket_ops, NULL, NULL) ?:
+	      rpdfs_block_setup(nfi, 32 /* XXX shrug */);
 	if (ret < 0)
-		ngnfs_unmount(nfi);
+		rpdfs_unmount(nfi);
 
 out:
 	list_for_each_entry_safe(ahead, tmp, &opts.addr_list, head) {
@@ -128,10 +128,10 @@ out:
 	return ret;
 }
 
-void ngnfs_unmount(struct ngnfs_fs_info *nfi)
+void rpdfs_unmount(struct rpdfs_fs_info *nfi)
 {
-	ngnfs_block_destroy(nfi);
-	ngnfs_msg_destroy(nfi);
-	ngnfs_manifest_destroy(nfi);
+	rpdfs_block_destroy(nfi);
+	rpdfs_msg_destroy(nfi);
+	rpdfs_manifest_destroy(nfi);
 	trace_destroy();
 }

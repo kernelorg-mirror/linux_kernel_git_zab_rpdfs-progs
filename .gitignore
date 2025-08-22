@@ -5,8 +5,8 @@ cscope.*
 .sparse.*
 shared/generated-trace-inlines.h
 utask/utask_gen_defs.h
-cli/ngnfs-cli
-devd/ngnfs-devd
-lib/libngnfs.a
+cli/rpdfs-cli
+devd/rpdfs-devd
+lib/librpdfs.a
 shared/lk/gen/gen_crc64table
 shared/lk/crc64table.h

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0+ */
-#ifndef NGNFS_SHARED_VA_H
-#define NGNFS_SHARED_VA_H
+#ifndef RPDFS_SHARED_VA_H
+#define RPDFS_SHARED_VA_H
 
 /*
  * This pleasingly bonkers construct lets the preprocessor calculate the

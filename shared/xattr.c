@@ -24,7 +24,7 @@
  */
 static u64 xattr_hash(void *name, size_t name_len)
 {
-	return xxh64(name, name_len, NGNFS_XATTR_HASH_SEED);
+	return xxh64(name, name_len, RPDFS_XATTR_HASH_SEED);
 }
 
 static bool xattr_names_equal(u8 *a, size_t a_len, u8 *b, size_t b_len)
@@ -37,10 +37,10 @@ static bool xattr_names_equal(u8 *a, size_t a_len, u8 *b, size_t b_len)
  * and back up to the caller.
  */
 struct xattr_args {
-	struct ngnfs_inode_txn_ref *ino;
+	struct rpdfs_inode_txn_ref *ino;
 	u64 hash;
 
-	struct ngnfs_xattr *xattr;
+	struct rpdfs_xattr *xattr;
 	int xattr_size;
 
 	char *name;
@@ -56,12 +56,12 @@ struct xattr_args {
 
 static size_t xattr_size(size_t name_len, size_t val_size)
 {
-	return offsetof(struct ngnfs_xattr, name) + name_len + val_size;
+	return offsetof(struct rpdfs_xattr, name) + name_len + val_size;
 }
 
-static void init_xattr_args(struct xattr_args *xa, struct ngnfs_inode_txn_ref *ino,
+static void init_xattr_args(struct xattr_args *xa, struct rpdfs_inode_txn_ref *ino,
 			    char *name, size_t name_len, void *value, size_t val_size,
-			    struct ngnfs_xattr *xattr, int flags)
+			    struct rpdfs_xattr *xattr, int flags)
 {
 	xa->ino = ino;
 	xa->hash = xattr_hash(name, name_len);
@@ -93,9 +93,9 @@ static void reset_xattr_args(struct xattr_args *xa)
 	xa->found = false;
 }
 
-static void init_xattr_key(struct ngnfs_btree_key *key, u64 hash, u64 counter)
+static void init_xattr_key(struct rpdfs_btree_key *key, u64 hash, u64 counter)
 {
-	*key = (struct ngnfs_btree_key) {
+	*key = (struct rpdfs_btree_key) {
 		.k[0] = cpu_to_le64(hash),
 		.k[1] = cpu_to_le64(counter),
 	};
@@ -106,24 +106,24 @@ static void init_xattr_key(struct ngnfs_btree_key *key, u64 hash, u64 counter)
  * xattr create counter value in the inode, and increment the inode
  * counter.
  */
-static void update_xattr_key(struct ngnfs_btree_key *key, u64 hash, struct ngnfs_inode_txn_ref *ino)
+static void update_xattr_key(struct rpdfs_btree_key *key, u64 hash, struct rpdfs_inode_txn_ref *ino)
 {
-	*key = (struct ngnfs_btree_key) {
+	*key = (struct rpdfs_btree_key) {
 		.k[0] = cpu_to_le64(hash),
 		.k[1] = ino->ninode->xattr_creates,
 	};
 
-	ngnfs_tblk_assign(ino->tblk, ino->ninode->xattr_creates,
+	rpdfs_tblk_assign(ino->tblk, ino->ninode->xattr_creates,
 			  cpu_to_le64(le64_to_cpu(key->k[1]) + 1));
 }
 
-static int fill_xattr_rd(struct ngnfs_btree_key *key, void *val, size_t val_size, void *arg)
+static int fill_xattr_rd(struct rpdfs_btree_key *key, void *val, size_t val_size, void *arg)
 {
 	struct xattr_args *xa = arg;
-	struct ngnfs_xattr *xattr = val;
+	struct rpdfs_xattr *xattr = val;
 
 	if (!xattr_names_equal(xattr->name, xattr->name_len, (u8 *) xa->name, xa->name_len))
-		return NGNFS_BTREE_ITER_CONTINUE;
+		return RPDFS_BTREE_ITER_CONTINUE;
 
 	if (le16_to_cpu(xattr->val_len) > xa->val_size)
 		return -ENOBUFS;
@@ -135,15 +135,15 @@ static int fill_xattr_rd(struct ngnfs_btree_key *key, void *val, size_t val_size
 	return 0;
 }
 
-static int get_xattr(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-		     struct ngnfs_inode_txn_ref *ino, struct xattr_args *xa)
+static int get_xattr(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+		     struct rpdfs_inode_txn_ref *ino, struct xattr_args *xa)
 {
-	struct ngnfs_btree_key key;
+	struct rpdfs_btree_key key;
 	int ret;
 
 	init_xattr_key(&key, xa->hash, 0);
 
-	ret = ngnfs_btree_read_iter(nfi, txn, &ino->ninode->xattrs, &key, NULL, NULL,
+	ret = rpdfs_btree_read_iter(nfi, txn, &ino->ninode->xattrs, &key, NULL, NULL,
 				    fill_xattr_rd, xa);
 
 	if (ret < 0)
@@ -155,11 +155,11 @@ out:
 	return ret;
 }
 
-int ngnfs_xattr_get(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig, char *name,
+int rpdfs_xattr_get(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *ig, char *name,
 		    void *value, size_t val_size)
 {
-	struct ngnfs_transaction txn;
-	struct ngnfs_inode_txn_ref ino;
+	struct rpdfs_transaction txn;
+	struct rpdfs_inode_txn_ref ino;
 	struct xattr_args xa;
 	size_t name_len;
 	int ret;
@@ -168,33 +168,33 @@ int ngnfs_xattr_get(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig, c
 	if (name_len > XATTR_NAME_MAX)
 		return -ERANGE;
 
-	ngnfs_txn_init(&txn);
+	rpdfs_txn_init(&txn);
 	init_xattr_args(&xa, &ino, name, name_len, value, val_size, NULL, 0);
 
 	do {
 		reset_xattr_args(&xa);
 
-		ret = ngnfs_inode_get(nfi, &txn, NBF_READ, ig, &ino) 			?:
+		ret = rpdfs_inode_get(nfi, &txn, NBF_READ, ig, &ino) 			?:
 		      get_xattr(nfi, &txn, &ino, &xa);
 
-	} while (ngnfs_txn_retry(nfi, &txn, &ret));
+	} while (rpdfs_txn_retry(nfi, &txn, &ret));
 
-	ngnfs_txn_teardown(nfi, &txn);
+	rpdfs_txn_teardown(nfi, &txn);
 
 	return ret ? ret : xa.val_size;
 }
 
-static int remove_xattr_wr(struct ngnfs_btree_key *key, void *val, size_t val_size, void *arg,
-			   struct ngnfs_btree_op *op)
+static int remove_xattr_wr(struct rpdfs_btree_key *key, void *val, size_t val_size, void *arg,
+			   struct rpdfs_btree_op *op)
 {
 	struct xattr_args *xa = arg;
-	struct ngnfs_xattr *xattr = val;
+	struct rpdfs_xattr *xattr = val;
 
 	if (!xattr)
 		return -ENODATA;
 
 	if (!xattr_names_equal(xattr->name, xattr->name_len, (u8 *) xa->name, xa->name_len))
-		return NGNFS_BTREE_ITER_CONTINUE;
+		return RPDFS_BTREE_ITER_CONTINUE;
 
 	xa->found = true;
 	xa->names_delta = -(xa->name_len + 1);
@@ -203,17 +203,17 @@ static int remove_xattr_wr(struct ngnfs_btree_key *key, void *val, size_t val_si
 	return 0;
 }
 
-static int remove_xattr(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+static int remove_xattr(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
 			struct xattr_args *xa)
 {
-	struct ngnfs_btree_key key;
-	struct ngnfs_btree_key last;
+	struct rpdfs_btree_key key;
+	struct rpdfs_btree_key last;
 	int ret;
 
 	init_xattr_key(&key, xa->hash, 0);
 	init_xattr_key(&last, xa->hash, U64_MAX);
 
-	ret = ngnfs_btree_write_iter(nfi, txn, xa->ino->tblk, &xa->ino->ninode->xattrs, &key,
+	ret = rpdfs_btree_write_iter(nfi, txn, xa->ino->tblk, &xa->ino->ninode->xattrs, &key,
 				     &last, remove_xattr_wr, xa);
 	if (ret < 0)
 		goto out;
@@ -227,10 +227,10 @@ out:
 /*
  * Prevent storing so many xattrs we can't list the names in listxattr.
  */
-static int check_xattr_names_len(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-				 struct ngnfs_inode_txn_ref *ino, int name_len)
+static int check_xattr_names_len(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+				 struct rpdfs_inode_txn_ref *ino, int name_len)
 {
-	if ((le32_to_cpu(ino->ninode->xattr_names_len) + name_len + 1) > NGNFS_XATTR_MAX_NAMES_LEN)
+	if ((le32_to_cpu(ino->ninode->xattr_names_len) + name_len + 1) > RPDFS_XATTR_MAX_NAMES_LEN)
 		return -ERANGE;
 
 	return 0;
@@ -240,27 +240,27 @@ static int check_xattr_names_len(struct ngnfs_fs_info *nfi, struct ngnfs_transac
  * Update the inode record of total xattr names. name_len may be
  * negative.
  */
-static int update_xattr_names_len(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-				  struct ngnfs_inode_txn_ref *ino, s32 name_len)
+static int update_xattr_names_len(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+				  struct rpdfs_inode_txn_ref *ino, s32 name_len)
 {
 	s32 names_len = le32_to_cpu(ino->ninode->xattr_names_len);
 
 	/* fs corruption and/or bugs can cause overflow/underflow/out of range */
-	if (names_len > NGNFS_XATTR_MAX_NAMES_LEN ||
+	if (names_len > RPDFS_XATTR_MAX_NAMES_LEN ||
 	    names_len + name_len < 0 ||
-	    names_len + name_len > NGNFS_XATTR_MAX_NAMES_LEN)
+	    names_len + name_len > RPDFS_XATTR_MAX_NAMES_LEN)
 		return -EUCLEAN;
 
-	ngnfs_tblk_assign(ino->tblk, ino->ninode->xattr_names_len,
+	rpdfs_tblk_assign(ino->tblk, ino->ninode->xattr_names_len,
 			  cpu_to_le32(names_len + name_len));
 
 	return 0;
 }
 
-int ngnfs_xattr_remove(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig, char *name)
+int rpdfs_xattr_remove(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *ig, char *name)
 {
-	struct ngnfs_transaction txn;
-	struct ngnfs_inode_txn_ref ino;
+	struct rpdfs_transaction txn;
+	struct rpdfs_inode_txn_ref ino;
 	struct xattr_args xa;
 	size_t name_len;
 	int ret;
@@ -269,19 +269,19 @@ int ngnfs_xattr_remove(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig
 	if (name_len > XATTR_NAME_MAX)
 		return -ERANGE;
 
-	ngnfs_txn_init(&txn);
+	rpdfs_txn_init(&txn);
 	init_xattr_args(&xa, &ino, name, name_len, NULL, 0, NULL, 0);
 
 	do {
 		reset_xattr_args(&xa);
 
-		ret = ngnfs_inode_get(nfi, &txn, NBF_WRITE, ig, &ino) 				?:
+		ret = rpdfs_inode_get(nfi, &txn, NBF_WRITE, ig, &ino) 				?:
 		      remove_xattr(nfi, &txn, &xa) 						?:
 		      update_xattr_names_len(nfi, &txn, &ino, xa.names_delta);
 
-	} while (ngnfs_txn_retry(nfi, &txn, &ret));
+	} while (rpdfs_txn_retry(nfi, &txn, &ret));
 
-	ngnfs_txn_teardown(nfi, &txn);
+	rpdfs_txn_teardown(nfi, &txn);
 
 	return ret;
 }
@@ -293,21 +293,21 @@ int ngnfs_xattr_remove(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig
  * - XATTR_REPLACE: set only if it already exists
  * - no flag: set whether or not it already exists
  */
-static int set_xattr_wr(struct ngnfs_btree_key *key, void *val, size_t val_size, void *arg,
-			struct ngnfs_btree_op *op)
+static int set_xattr_wr(struct rpdfs_btree_key *key, void *val, size_t val_size, void *arg,
+			struct rpdfs_btree_op *op)
 {
 	struct xattr_args *xa = arg;
-	struct ngnfs_xattr *xattr = val;
+	struct rpdfs_xattr *xattr = val;
 
 	/* XATTR_REPLACE but no existing xattr */
 	if (!xattr && xa->flags & XATTR_REPLACE)
-		return NGNFS_BTREE_ITER_CONTINUE;
+		return RPDFS_BTREE_ITER_CONTINUE;
 
 	/* XATTR_REPLACE or no flag, and xattr with matching hash exists */
 	if (xattr && !(xa->flags & XATTR_CREATE)) {
 		if (!xattr_names_equal(xattr->name, xattr->name_len,
 				       (u8 *) xa->name, xa->name_len))
-			return NGNFS_BTREE_ITER_CONTINUE;
+			return RPDFS_BTREE_ITER_CONTINUE;
 	}
 
 	/* XATTR_CREATE and xattr with matching hash exists */
@@ -335,18 +335,18 @@ static int set_xattr_wr(struct ngnfs_btree_key *key, void *val, size_t val_size,
 	return 0;
 }
 
-static int set_xattr(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
+static int set_xattr(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
 		     struct xattr_args *xa)
 {
 
-	struct ngnfs_btree_key key;
-	struct ngnfs_btree_key last;
+	struct rpdfs_btree_key key;
+	struct rpdfs_btree_key last;
 	int ret;
 
 	init_xattr_key(&key, xa->hash, 0);
 	init_xattr_key(&last, xa->hash, U64_MAX);
 
-	ret = ngnfs_btree_write_iter(nfi, txn, xa->ino->tblk, &xa->ino->ninode->xattrs, &key,
+	ret = rpdfs_btree_write_iter(nfi, txn, xa->ino->tblk, &xa->ino->ninode->xattrs, &key,
 				     &last, set_xattr_wr, xa);
 	if (ret < 0)
 		goto out;
@@ -357,13 +357,13 @@ out:
 	return ret;
 }
 
-int ngnfs_xattr_set(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig, char *name,
+int rpdfs_xattr_set(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *ig, char *name,
 		    void *value, size_t val_size, int flags)
 {
-	struct ngnfs_transaction txn;
-	struct ngnfs_inode_txn_ref ino;
+	struct rpdfs_transaction txn;
+	struct rpdfs_inode_txn_ref ino;
 	struct xattr_args xa;
-	struct ngnfs_xattr *xattr;
+	struct rpdfs_xattr *xattr;
 	size_t xa_size;
 	size_t name_len;
 	int ret;
@@ -373,27 +373,27 @@ int ngnfs_xattr_set(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig, c
 		return -ERANGE;
 
 	xa_size = xattr_size(name_len, val_size);
-	if (xa_size > NGNFS_XATTR_MAX_SIZE)
+	if (xa_size > RPDFS_XATTR_MAX_SIZE)
 		return -ERANGE;
 
 	xattr = kmalloc(xa_size, GFP_NOFS);
 	if (!xattr)
 		return -ENOMEM;
 
-	ngnfs_txn_init(&txn);
+	rpdfs_txn_init(&txn);
 	init_xattr_args(&xa, &ino, name, name_len, value, val_size, xattr, flags);
 
 	do {
 		reset_xattr_args(&xa);
 
-		ret = ngnfs_inode_get(nfi, &txn, NBF_WRITE, ig, &ino) 				?:
+		ret = rpdfs_inode_get(nfi, &txn, NBF_WRITE, ig, &ino) 				?:
 		      check_xattr_names_len(nfi, &txn, &ino, xa.name_len)			?:
 		      set_xattr(nfi, &txn, &xa)							?:
 		      update_xattr_names_len(nfi, &txn, &ino, xa.names_delta);
 
-	} while (ngnfs_txn_retry(nfi, &txn, &ret));
+	} while (rpdfs_txn_retry(nfi, &txn, &ret));
 
-	ngnfs_txn_teardown(nfi, &txn);
+	rpdfs_txn_teardown(nfi, &txn);
 
 	kfree(xattr);
 
@@ -410,10 +410,10 @@ struct listxattr_args {
  * Copy one xattr name into the buf, followed by a null byte, unless the
  * buf is zero size, in which case just increment the size counter.
  */
-static int fill_listxattr_rd(struct ngnfs_btree_key *key, void *val, size_t val_size, void *args)
+static int fill_listxattr_rd(struct rpdfs_btree_key *key, void *val, size_t val_size, void *args)
 {
 	struct listxattr_args *la = args;
-	struct ngnfs_xattr *xattr = val;
+	struct rpdfs_xattr *xattr = val;
 	size_t bytes;
 
 	bytes = xattr->name_len + 1;
@@ -429,10 +429,10 @@ out:
 	la->used += bytes;
 
 	/* check for file system corruption */
-	if (la->used > NGNFS_XATTR_MAX_NAMES_LEN)
+	if (la->used > RPDFS_XATTR_MAX_NAMES_LEN)
 		return -EUCLEAN;
 
-	return NGNFS_BTREE_ITER_CONTINUE;
+	return RPDFS_BTREE_ITER_CONTINUE;
 }
 
 /*
@@ -440,31 +440,31 @@ out:
  * if the size of the buf is zero, the size that would be required to
  * return the list.
  */
-int ngnfs_xattr_list(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig, void *buf,
+int rpdfs_xattr_list(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *ig, void *buf,
 		     size_t size)
 {
-	struct ngnfs_transaction txn;
-	struct ngnfs_btree_key key;
-	struct ngnfs_inode_txn_ref ino;
+	struct rpdfs_transaction txn;
+	struct rpdfs_btree_key key;
+	struct rpdfs_inode_txn_ref ino;
 	struct listxattr_args la;
 	int ret;
 
 	la.buf = buf;
 	la.size = size;
 
-	ngnfs_txn_init(&txn);
+	rpdfs_txn_init(&txn);
 	init_xattr_key(&key, 0, 0);
 
 	do {
 		la.used = 0;
 
-		ret = ngnfs_inode_get(nfi, &txn, NBF_READ, ig, &ino)				?:
-		      ngnfs_btree_read_iter(nfi, &txn, &ino.ninode->xattrs, &key,
+		ret = rpdfs_inode_get(nfi, &txn, NBF_READ, ig, &ino)				?:
+		      rpdfs_btree_read_iter(nfi, &txn, &ino.ninode->xattrs, &key,
 					    NULL, NULL, fill_listxattr_rd, &la);
 
-	} while (ngnfs_txn_retry(nfi, &txn, &ret));
+	} while (rpdfs_txn_retry(nfi, &txn, &ret));
 
-	ngnfs_txn_teardown(nfi, &txn);
+	rpdfs_txn_teardown(nfi, &txn);
 
 	return ret ?: la.used;
 }

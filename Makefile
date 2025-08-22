@@ -29,7 +29,7 @@ OBJ_S := $(patsubst %.S,%.o,$(SRC_S))
 BIN := $(patsubst %.c,%,$(shell grep -l "^int main" $(SRC)))
 
 # make a static library out of everything in shared
-LIB := lib/libngnfs.a
+LIB := lib/librpdfs.a
 LIB_DIR := shared shared/lk
 LIB_SRC := $(foreach d,$(LIB_DIR),$(wildcard $(d)/*.c))
 LIB_OBJ := $(patsubst %.c,%.o,$(LIB_SRC))

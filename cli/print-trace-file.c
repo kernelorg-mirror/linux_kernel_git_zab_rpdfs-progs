@@ -21,8 +21,8 @@
 
 #include "cli/cli.h"
 
-static struct timespec get_event_real_ts(struct ngnfs_trace_file *tfi,
-					 struct ngnfs_trace_event *tev)
+static struct timespec get_event_real_ts(struct rpdfs_trace_file *tfi,
+					 struct rpdfs_trace_event *tev)
 {
 	struct timespec ts;
 	u64 nsec;
@@ -47,18 +47,18 @@ static u64 get_thread_nr(off_t off)
  */
 static int compar_events(const void *A, const void *B)
 {
-	const struct ngnfs_trace_event * const *a = A;
-	const struct ngnfs_trace_event * const *b = B;
+	const struct rpdfs_trace_event * const *a = A;
+	const struct rpdfs_trace_event * const *b = B;
 
-	return ngnfs_compare((*a)->tick, (*b)->tick) ?: ngnfs_compare(*a, *b);
+	return rpdfs_compare((*a)->tick, (*b)->tick) ?: rpdfs_compare(*a, *b);
 }
 
 static int print_trace_file_func(int argc, char **argv)
 {
-	struct ngnfs_trace_event **events = NULL;
-	struct ngnfs_trace_thread *tthr;
-	struct ngnfs_trace_event *tev;
-	struct ngnfs_trace_file *tfi;
+	struct rpdfs_trace_event **events = NULL;
+	struct rpdfs_trace_thread *tthr;
+	struct rpdfs_trace_event *tev;
+	struct rpdfs_trace_file *tfi;
 	void *addr = MAP_FAILED;
 	struct timespec ts;
 	struct stat st;
@@ -104,8 +104,8 @@ static int print_trace_file_func(int argc, char **argv)
 	 * file size to store the highest possible number of events with
 	 * the smallest id struct size.
 	 */
-	events = calloc(st.st_size / (sizeof(struct ngnfs_trace_event) + 8),
-		      sizeof(struct ngnfs_trace_event *));
+	events = calloc(st.st_size / (sizeof(struct rpdfs_trace_event) + 8),
+		      sizeof(struct rpdfs_trace_event *));
 	tids = calloc(DIV_ROUND_UP(st.st_size, TRACE_THREAD_SIZE), sizeof(u64));
 	if (!events || !tids) {
 		ret = -errno;
@@ -123,7 +123,7 @@ static int print_trace_file_func(int argc, char **argv)
 
 	off = TRACE_CHUNK_SIZE;
 	nr_events = 0;
-	while (off + sizeof(struct ngnfs_trace_event) <= st.st_size) {
+	while (off + sizeof(struct rpdfs_trace_event) <= st.st_size) {
 
 		if ((off - TRACE_CHUNK_SIZE) % TRACE_THREAD_SIZE == 0) {
 			tthr = addr + off;
@@ -148,7 +148,7 @@ static int print_trace_file_func(int argc, char **argv)
 		off += tev->size;
 	}
 
-	qsort(events, nr_events, sizeof(struct ngnfs_trace_event *), compar_events);
+	qsort(events, nr_events, sizeof(struct rpdfs_trace_event *), compar_events);
 
 	printf("# trace file metadata:\n"
 	       "#   size %llu\n"

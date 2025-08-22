@@ -42,7 +42,7 @@
  * deletion of a few items doesn't bounce a pair of blocks between
  * splitting and merging.
  */
-#define NGNFS_BTREE_MERGE_FREE_THRESH	(NGNFS_BTREE_MAX_FREE * (100 - 40) / 100)
+#define RPDFS_BTREE_MERGE_FREE_THRESH	(RPDFS_BTREE_MAX_FREE * (100 - 40) / 100)
 
 /*
  * If an insertion could be performed after compacting free space, but
@@ -53,11 +53,11 @@
  * be involved in the cycle before each compaction, so the lower its
  * amortized cost.
  */
-#define NGNFS_BTREE_SPLIT_FREE_THRESH	(NGNFS_BTREE_MAX_FREE * 10 / 100)
+#define RPDFS_BTREE_SPLIT_FREE_THRESH	(RPDFS_BTREE_MAX_FREE * 10 / 100)
 
 /* 0, ~0 don't need endian swapping */
-static struct ngnfs_btree_key min_key = { { 0, 0, 0} };
-static struct ngnfs_btree_key max_key = { { (__le64 __force)U64_MAX,
+static struct rpdfs_btree_key min_key = { { 0, 0, 0} };
+static struct rpdfs_btree_key max_key = { { (__le64 __force)U64_MAX,
 					    (__le64 __force)U64_MAX,
 					    (__le64 __force)U64_MAX} };
 
@@ -66,34 +66,34 @@ static struct ngnfs_btree_key max_key = { { (__le64 __force)U64_MAX,
  * btree block header.  This will change as the network block protocol
  * provides metadata for all blocks.
  */
-static void init_ref(struct ngnfs_block_ref *ref, struct ngnfs_btree_block *bt)
+static void init_ref(struct rpdfs_block_ref *ref, struct rpdfs_btree_block *bt)
 {
 	ref->bnr = bt->bnr;
 }
 
-static void init_block(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block *bt,
-		       u64 bnr, u8 level, struct ngnfs_btree_key *first,
-		       struct ngnfs_btree_key *last)
+static void init_block(struct rpdfs_txn_block *tblk, struct rpdfs_btree_block *bt,
+		       u64 bnr, u8 level, struct rpdfs_btree_key *first,
+		       struct rpdfs_btree_key *last)
 {
-	ngnfs_tblk_assign(tblk, bt->first, *first);
-	ngnfs_tblk_assign(tblk, bt->last, *last);
-	ngnfs_tblk_assign(tblk, bt->bnr, cpu_to_le64(bnr));
-	ngnfs_tblk_assign(tblk, bt->nr_items, 0);
-	ngnfs_tblk_assign(tblk, bt->tail_free, cpu_to_le16(NGNFS_BTREE_MAX_FREE));
-	ngnfs_tblk_assign(tblk, bt->total_free, bt->tail_free);
-	ngnfs_tblk_assign(tblk, bt->level, level);
-	ngnfs_tblk_memset(tblk, &bt->_pad[0], 0, sizeof(bt->_pad));
-	ngnfs_tblk_zero_tail(tblk, bt, sizeof(struct ngnfs_btree_block), NGNFS_BLOCK_SIZE);
+	rpdfs_tblk_assign(tblk, bt->first, *first);
+	rpdfs_tblk_assign(tblk, bt->last, *last);
+	rpdfs_tblk_assign(tblk, bt->bnr, cpu_to_le64(bnr));
+	rpdfs_tblk_assign(tblk, bt->nr_items, 0);
+	rpdfs_tblk_assign(tblk, bt->tail_free, cpu_to_le16(RPDFS_BTREE_MAX_FREE));
+	rpdfs_tblk_assign(tblk, bt->total_free, bt->tail_free);
+	rpdfs_tblk_assign(tblk, bt->level, level);
+	rpdfs_tblk_memset(tblk, &bt->_pad[0], 0, sizeof(bt->_pad));
+	rpdfs_tblk_zero_tail(tblk, bt, sizeof(struct rpdfs_btree_block), RPDFS_BLOCK_SIZE);
 }
 
 static void bug_on_bad_item_off(size_t off)
 {
-	BUG_ON(off < offsetof(struct ngnfs_btree_block, ihdrs[NGNFS_BTREE_MAX_ITEMS]));
-	BUG_ON(off > (NGNFS_BLOCK_SIZE - sizeof(struct ngnfs_btree_item)));
-	BUG_ON(!IS_ALIGNED(off, NGNFS_BTREE_ITEM_ALIGN));
+	BUG_ON(off < offsetof(struct rpdfs_btree_block, ihdrs[RPDFS_BTREE_MAX_ITEMS]));
+	BUG_ON(off > (RPDFS_BLOCK_SIZE - sizeof(struct rpdfs_btree_item)));
+	BUG_ON(!IS_ALIGNED(off, RPDFS_BTREE_ITEM_ALIGN));
 }
 
-static struct ngnfs_btree_item *item_from_off(struct ngnfs_btree_block *bt, u16 off)
+static struct rpdfs_btree_item *item_from_off(struct rpdfs_btree_block *bt, u16 off)
 {
 	if (off == 0)
 		return NULL;
@@ -103,40 +103,40 @@ static struct ngnfs_btree_item *item_from_off(struct ngnfs_btree_block *bt, u16 
 	return (void *)bt + off;
 }
 
-static inline struct ngnfs_btree_item *item_from_ind(struct ngnfs_btree_block *bt, u16 ind)
+static inline struct rpdfs_btree_item *item_from_ind(struct rpdfs_btree_block *bt, u16 ind)
 {
 	BUG_ON(ind >= le16_to_cpu(bt->nr_items));
 
 	return item_from_off(bt, le16_to_cpu(bt->ihdrs[ind].off));
 }
 
-static u16 item_val_size(struct ngnfs_btree_block *bt, u16 ind)
+static u16 item_val_size(struct rpdfs_btree_block *bt, u16 ind)
 {
 	return le16_to_cpu(bt->ihdrs[ind].val_size);
 }
 
 static u16 aligned_item_size(u16 val_size)
 {
-	return ALIGN(sizeof(struct ngnfs_btree_item) + val_size, NGNFS_BTREE_ITEM_ALIGN);
+	return ALIGN(sizeof(struct rpdfs_btree_item) + val_size, RPDFS_BTREE_ITEM_ALIGN);
 }
 
 __unused
-static struct ngnfs_btree_item *first_item(struct ngnfs_btree_block *bt)
+static struct rpdfs_btree_item *first_item(struct rpdfs_btree_block *bt)
 {
 	return item_from_ind(bt, 0);
 }
 
-static struct ngnfs_btree_item *last_item(struct ngnfs_btree_block *bt)
+static struct rpdfs_btree_item *last_item(struct rpdfs_btree_block *bt)
 {
 	/* bad ind from nr_items == 0 caught by item_from_ind assertion */
 	return item_from_ind(bt, le16_to_cpu(bt->nr_items) - 1);
 }
 
-static int compare_keys(struct ngnfs_btree_key *a, struct ngnfs_btree_key *b)
+static int compare_keys(struct rpdfs_btree_key *a, struct rpdfs_btree_key *b)
 {
-	return ngnfs_compare(le64_to_cpu(a->k[0]), le64_to_cpu(b->k[0])) ?:
-	       ngnfs_compare(le64_to_cpu(a->k[1]), le64_to_cpu(b->k[1])) ?:
-	       ngnfs_compare(le64_to_cpu(a->k[2]), le64_to_cpu(b->k[2]));
+	return rpdfs_compare(le64_to_cpu(a->k[0]), le64_to_cpu(b->k[0])) ?:
+	       rpdfs_compare(le64_to_cpu(a->k[1]), le64_to_cpu(b->k[1])) ?:
+	       rpdfs_compare(le64_to_cpu(a->k[2]), le64_to_cpu(b->k[2]));
 }
 
 /*
@@ -144,9 +144,9 @@ static int compare_keys(struct ngnfs_btree_key *a, struct ngnfs_btree_key *b)
  * the index past the current size of the array for insertion.  The caller is responsible
  * for using the returned index appropriately.
  */
-static u16 find_key_ind(struct ngnfs_btree_block *bt, struct ngnfs_btree_key *key)
+static u16 find_key_ind(struct rpdfs_btree_block *bt, struct rpdfs_btree_key *key)
 {
-	struct ngnfs_btree_item *item;
+	struct rpdfs_btree_item *item;
 	int start = 0;
 	int end = (int)le16_to_cpu(bt->nr_items) - 1;
 	int ind = 0;
@@ -170,9 +170,9 @@ static u16 find_key_ind(struct ngnfs_btree_block *bt, struct ngnfs_btree_key *ke
 
 static int cmp_ihdr_off(const void *A, const void *B, const void *priv)
 {
-	const struct ngnfs_btree_block *bt = priv;
-	const struct ngnfs_btree_item_header *a = &bt->ihdrs[*(u16 *)A];
-	const struct ngnfs_btree_item_header *b = &bt->ihdrs[*(u16 *)B];
+	const struct rpdfs_btree_block *bt = priv;
+	const struct rpdfs_btree_item_header *a = &bt->ihdrs[*(u16 *)A];
+	const struct rpdfs_btree_item_header *b = &bt->ihdrs[*(u16 *)B];
 
 	return (int)le16_to_cpu(a->off) - (int)le16_to_cpu(b->off);
 }
@@ -180,7 +180,7 @@ static int cmp_ihdr_off(const void *A, const void *B, const void *priv)
 #define verify_printf(print, fmt, args...)	\
 	if (print) dprintf(STDOUT_FILENO, fmt, ##args)
 
-static void print_key(int print, struct ngnfs_btree_key *key)
+static void print_key(int print, struct rpdfs_btree_key *key)
 {
 	verify_printf(print, "[%020llu %020llu %020llu]",
 		      le64_to_cpu(key->k[0]), le64_to_cpu(key->k[1]), le64_to_cpu(key->k[2]));
@@ -193,12 +193,12 @@ static void print_key(int print, struct ngnfs_btree_key *key)
  * Avoid using functions that may have BUG_ON() checking in them so that
  * we can print out damaged btree blocks without crashing.
  */
-static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-				 char *str, struct ngnfs_btree_block *bt, int print)
+static int do_verify_btree_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+				 char *str, struct rpdfs_btree_block *bt, int print)
 {
-	struct ngnfs_btree_item *item;
-	struct ngnfs_block_ref *ref;
-	struct ngnfs_btree_key *prev;
+	struct rpdfs_btree_item *item;
+	struct rpdfs_block_ref *ref;
+	struct rpdfs_btree_key *prev;
 	u16 *inds = NULL;
 	u16 val_size, val_bytes;
 	u16 off, prev_end;
@@ -245,9 +245,9 @@ static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 
 	nr_items = le16_to_cpu(bt->nr_items);
 
-	if (nr_items > NGNFS_BTREE_MAX_ITEMS) {
+	if (nr_items > RPDFS_BTREE_MAX_ITEMS) {
 		verify_printf(print, "ERROR: nr_items %u > %lu\n",
-			      nr_items, NGNFS_BTREE_MAX_ITEMS);
+			      nr_items, RPDFS_BTREE_MAX_ITEMS);
 		ret = -EUCLEAN;
 		if (!print)
 			goto out;
@@ -262,7 +262,7 @@ static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 	ooo_items = 0;
 	prev = NULL;
 
-	for (ind = 0; ind < NGNFS_BTREE_MAX_ITEMS; ind++) {
+	for (ind = 0; ind < RPDFS_BTREE_MAX_ITEMS; ind++) {
 		off = le16_to_cpu(bt->ihdrs[ind].off);
 		val_size = le16_to_cpu(bt->ihdrs[ind].val_size);
 		item_bytes = aligned_item_size(val_size);
@@ -294,8 +294,8 @@ static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 		ini_items++;
 
 		/* check the item offset */
-		if (off < NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE ||
-		    off + sizeof(struct ngnfs_btree_key) > NGNFS_BLOCK_SIZE) {
+		if (off < RPDFS_BLOCK_SIZE - RPDFS_BTREE_MAX_FREE ||
+		    off + sizeof(struct rpdfs_btree_key) > RPDFS_BLOCK_SIZE) {
 			verify_printf(print, "ERROR: ihdrs[%3u]: invalid offset %u\n", ind, off);
 			off_items++;
 			ret = -EUCLEAN;
@@ -305,7 +305,7 @@ static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 		}
 
 		/* check the item size */
-		if (off + item_bytes > NGNFS_BLOCK_SIZE) {
+		if (off + item_bytes > RPDFS_BLOCK_SIZE) {
 			verify_printf(print, "ERROR: ihdrs[%3u]: item val_size too big: %u "
 				      "(%u aligned)\n", ind, val_size, item_bytes);
 			big_items++;
@@ -353,9 +353,9 @@ static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 
 		/* if not a leaf, print the child's block number */
 		if (bt->level) {
-			ref = (struct ngnfs_block_ref *) item->val;
+			ref = (struct rpdfs_block_ref *) item->val;
 
-			if (val_size != sizeof(struct ngnfs_block_ref)) {
+			if (val_size != sizeof(struct rpdfs_block_ref)) {
 				verify_printf(print, "ERROR: ihdrs[%3u]: "
 					      "level %u wrong item value size for block ref %u\n",
 					      ind, bt->level, val_size);
@@ -405,14 +405,14 @@ static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 
 	sort_r(inds, nr_items, sizeof(inds[0]), cmp_ihdr_off, NULL, bt);
 
-	prev_end = NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE;
+	prev_end = RPDFS_BLOCK_SIZE - RPDFS_BTREE_MAX_FREE;
 
 	for (i = 0; i < nr_items; i++) {
 		ind = inds[i];
 		item = item_from_ind(bt, ind);
 		off = le16_to_cpu(bt->ihdrs[ind].off);
 		val_size = le16_to_cpu(bt->ihdrs[ind].val_size);
-		val_bytes = ALIGN(val_size, NGNFS_BTREE_ITEM_ALIGN);
+		val_bytes = ALIGN(val_size, RPDFS_BTREE_ITEM_ALIGN);
 		item_bytes = aligned_item_size(val_size);
 
 		if (off < prev_end) {
@@ -423,10 +423,10 @@ static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 				if (!print)
 					goto out;
 
-			} else if (off < NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE) {
+			} else if (off < RPDFS_BLOCK_SIZE - RPDFS_BTREE_MAX_FREE) {
 				verify_printf(print, "ERROR: ihdrs[%3u].off %4u overlaps btree "
 					      "block header ending at %lu\n", ind, off,
-					      NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE);
+					      RPDFS_BLOCK_SIZE - RPDFS_BTREE_MAX_FREE);
 				ret = -EUCLEAN;
 				if (!print)
 					goto out;
@@ -463,9 +463,9 @@ static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 
 			verify_printf(print, "ERROR: non-zero byte %0x at offset %u "
 				      "between item[%u] offset %u ", c, j, ind, off);
-			if (prev_end == NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE) {
+			if (prev_end == RPDFS_BLOCK_SIZE - RPDFS_BTREE_MAX_FREE) {
 				verify_printf(print, "and beginning of values %lu\n",
-					      NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE);
+					      RPDFS_BLOCK_SIZE - RPDFS_BTREE_MAX_FREE);
 			} else {
 				verify_printf(print, "and end of previous item %u offset %u\n",
 					      inds[ind - 1],
@@ -481,7 +481,7 @@ static int do_verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 	}
 
 	/* check that end of block is zeroed */
-	for (j = prev_end; j < NGNFS_BLOCK_SIZE; j++) {
+	for (j = prev_end; j < RPDFS_BLOCK_SIZE; j++) {
 		c = *((char *)((void *)bt + j));
 		if (c == 0)
 			continue;
@@ -527,8 +527,8 @@ out:
 	return ret;
 }
 
-static void print_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, char *str,
-			      struct ngnfs_btree_block *bt)
+static void print_btree_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn, char *str,
+			      struct rpdfs_btree_block *bt)
 {
 	do_verify_btree_block(nfi, txn, str, bt, 1);
 }
@@ -537,8 +537,8 @@ static void print_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transactio
  * Verify the btree structure, but only print it out if there's an
  * error. Returns the last error encountered.
  */
-static int verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, char *str,
-			      struct ngnfs_btree_block *bt)
+static int verify_btree_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn, char *str,
+			      struct rpdfs_btree_block *bt)
 {
 	int ret;
 
@@ -557,13 +557,13 @@ static int verify_btree_block(struct ngnfs_fs_info *nfi, struct ngnfs_transactio
  * May also return -ENOMEM.
  */
 __unused
-static int verify_btree_block_parent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-				     char *str, struct ngnfs_btree_block *bt,
-				     struct ngnfs_btree_block *parent, struct ngnfs_btree_key *key)
+static int verify_btree_block_parent(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+				     char *str, struct rpdfs_btree_block *bt,
+				     struct rpdfs_btree_block *parent, struct rpdfs_btree_key *key)
 {
-	struct ngnfs_btree_key start;
-	struct ngnfs_btree_key end;
-	struct ngnfs_btree_item *item;
+	struct rpdfs_btree_key start;
+	struct rpdfs_btree_key end;
+	struct rpdfs_btree_item *item;
 	int ind;
 	int ret, parent_ret;
 
@@ -590,18 +590,18 @@ static int verify_btree_block_parent(struct ngnfs_fs_info *nfi, struct ngnfs_tra
 		item = item_from_ind(parent, ind);
 
 		if (ind == 0) {
-			ngnfs_btree_key_set_min(&start);
+			rpdfs_btree_key_set_min(&start);
 			end = item->key;
 
 		} else if (ind == le16_to_cpu(parent->nr_items)) {
 			start = item->key;
-			ngnfs_btree_key_set_max(&end);
+			rpdfs_btree_key_set_max(&end);
 
 		} else {
 			end = item->key;
 			item = item_from_ind(parent, ind - 1);
 			start = item->key;
-			ngnfs_btree_key_inc(&start);
+			rpdfs_btree_key_inc(&start);
 		}
 
 		if (compare_keys(&bt->first, &start) || compare_keys(&bt->last, &end)) {
@@ -628,22 +628,22 @@ out:
 	return parent_ret ?: ret;
 }
 
-int ngnfs_print_btree_block(struct ngnfs_fs_info *nfi, u64 bnr, char *str)
+int rpdfs_print_btree_block(struct rpdfs_fs_info *nfi, u64 bnr, char *str)
 {
-	struct ngnfs_transaction txn;
-	struct ngnfs_btree_block *bt;
+	struct rpdfs_transaction txn;
+	struct rpdfs_btree_block *bt;
 	int ret;
 
-	ngnfs_txn_init(&txn);
+	rpdfs_txn_init(&txn);
 
 	do {
-		ret = ngnfs_txn_get_block(nfi, &txn, bnr, NBF_READ, NULL, (void **)&bt);
+		ret = rpdfs_txn_get_block(nfi, &txn, bnr, NBF_READ, NULL, (void **)&bt);
 		if (ret == 0)
 		      print_btree_block(nfi, &txn, str, bt);
 
-	} while (ngnfs_txn_retry(nfi, &txn, &ret));
+	} while (rpdfs_txn_retry(nfi, &txn, &ret));
 
-	ngnfs_txn_teardown(nfi, &txn);
+	rpdfs_txn_teardown(nfi, &txn);
 
 	return ret;
 }
@@ -657,7 +657,7 @@ int ngnfs_print_btree_block(struct ngnfs_fs_info *nfi, u64 bnr, char *str)
  * If we are preparing a parent node for a potential write operation to
  * a leaf, we treat it like a insert.
  */
-static bool should_compact(struct ngnfs_btree_block *bt, u16 val_size, u16 old_size, int op)
+static bool should_compact(struct rpdfs_btree_block *bt, u16 val_size, u16 old_size, int op)
 {
 	u16 val_bytes = aligned_item_size(val_size);
 	u16 old_bytes = aligned_item_size(old_size);
@@ -689,7 +689,7 @@ static bool should_compact(struct ngnfs_btree_block *bt, u16 val_size, u16 old_s
  * If we are preparing a parent node for a potential write operation to
  * a leaf, we treat it like an insert.
  */
-static bool should_split(struct ngnfs_btree_block *bt, u16 val_size, int op)
+static bool should_split(struct rpdfs_btree_block *bt, u16 val_size, int op)
 {
 	u16 size = aligned_item_size(val_size);
 	u16 total_free = le16_to_cpu(bt->total_free);
@@ -700,7 +700,7 @@ static bool should_split(struct ngnfs_btree_block *bt, u16 val_size, int op)
 	else
 		ret = (size > total_free) ||
 		      (size > le16_to_cpu(bt->tail_free) &&
-		       total_free < NGNFS_BTREE_SPLIT_FREE_THRESH);
+		       total_free < RPDFS_BTREE_SPLIT_FREE_THRESH);
 
 	return ret;
 }
@@ -715,7 +715,7 @@ static bool should_split(struct ngnfs_btree_block *bt, u16 val_size, int op)
  * If we are preparing a parent node for a potential write operation to
  * a leaf, we treat it like a delete.
  */
-static bool should_merge(struct ngnfs_btree_block *bt, u16 val_size, u16 old_size, int op)
+static bool should_merge(struct rpdfs_btree_block *bt, u16 val_size, u16 old_size, int op)
 {
 	u16 val_bytes = aligned_item_size(val_size);
 	u16 old_bytes = aligned_item_size(old_size);
@@ -727,7 +727,7 @@ static bool should_merge(struct ngnfs_btree_block *bt, u16 val_size, u16 old_siz
 		ret = false;
 	else
 		ret = le16_to_cpu(bt->total_free) + val_bytes - old_bytes >=
-		      NGNFS_BTREE_MERGE_FREE_THRESH;
+		      RPDFS_BTREE_MERGE_FREE_THRESH;
 
 	return ret;
 }
@@ -738,13 +738,13 @@ static bool should_merge(struct ngnfs_btree_block *bt, u16 val_size, u16 old_siz
  * (when inserting into an empty block or deleting the last sorted item
  * in the block).
  */
-static inline void memmove_item_headers(struct ngnfs_txn_block *tblk,
-					struct ngnfs_btree_block *bt, u16 ind, int dist)
+static inline void memmove_item_headers(struct rpdfs_txn_block *tblk,
+					struct rpdfs_btree_block *bt, u16 ind, int dist)
 {
 	u16 nr = le16_to_cpu(bt->nr_items);
 
 	if (ind < nr)
-		ngnfs_tblk_memmove(tblk, &bt->ihdrs[ind + dist], &bt->ihdrs[ind],
+		rpdfs_tblk_memmove(tblk, &bt->ihdrs[ind + dist], &bt->ihdrs[ind],
 				   (nr - ind) * sizeof(bt->ihdrs[0]));
 }
 
@@ -757,30 +757,30 @@ static inline void memmove_item_headers(struct ngnfs_txn_block *tblk,
  * here. The caller must ensure that there is sufficient free space for
  * the item.
  */
-static struct ngnfs_btree_item *insert_item(struct ngnfs_txn_block *tblk,
-					    struct ngnfs_btree_block *bt, u16 ind,
-					    struct ngnfs_btree_key *key, void *val, u16 val_size)
+static struct rpdfs_btree_item *insert_item(struct rpdfs_txn_block *tblk,
+					    struct rpdfs_btree_block *bt, u16 ind,
+					    struct rpdfs_btree_key *key, void *val, u16 val_size)
 {
-	u16 off = NGNFS_BLOCK_SIZE - le16_to_cpu(bt->tail_free);
-	struct ngnfs_btree_item *item = item_from_off(bt, off);
+	u16 off = RPDFS_BLOCK_SIZE - le16_to_cpu(bt->tail_free);
+	struct rpdfs_btree_item *item = item_from_off(bt, off);
 	u16 bytes = aligned_item_size(val_size);
 
-	BUG_ON(ind >= NGNFS_BTREE_MAX_ITEMS);
-	BUG_ON(le16_to_cpu(bt->tail_free) - bytes > NGNFS_BTREE_MAX_FREE);
-	BUG_ON(le16_to_cpu(bt->total_free) - bytes > NGNFS_BTREE_MAX_FREE);
+	BUG_ON(ind >= RPDFS_BTREE_MAX_ITEMS);
+	BUG_ON(le16_to_cpu(bt->tail_free) - bytes > RPDFS_BTREE_MAX_FREE);
+	BUG_ON(le16_to_cpu(bt->total_free) - bytes > RPDFS_BTREE_MAX_FREE);
 
 	memmove_item_headers(tblk, bt, ind, 1);
-	ngnfs_tblk_le16_add_cpu(tblk, &bt->tail_free, -bytes);
-	ngnfs_tblk_le16_add_cpu(tblk, &bt->total_free, -bytes);
-	ngnfs_tblk_le16_add_cpu(tblk, &bt->nr_items, 1);
-	ngnfs_tblk_assign(tblk, bt->ihdrs[ind].off, cpu_to_le16(off));
-	ngnfs_tblk_assign(tblk, bt->ihdrs[ind].val_size, cpu_to_le16(val_size));
+	rpdfs_tblk_le16_add_cpu(tblk, &bt->tail_free, -bytes);
+	rpdfs_tblk_le16_add_cpu(tblk, &bt->total_free, -bytes);
+	rpdfs_tblk_le16_add_cpu(tblk, &bt->nr_items, 1);
+	rpdfs_tblk_assign(tblk, bt->ihdrs[ind].off, cpu_to_le16(off));
+	rpdfs_tblk_assign(tblk, bt->ihdrs[ind].val_size, cpu_to_le16(val_size));
 
-	ngnfs_tblk_assign(tblk, item->key, *key);
+	rpdfs_tblk_assign(tblk, item->key, *key);
 	if (val_size) {
-		ngnfs_tblk_memcpy(tblk, &item->val[0], val, val_size);
-		ngnfs_tblk_zero_tail(tblk, &item->val[0], val_size,
-				     ALIGN(val_size, NGNFS_BTREE_ITEM_ALIGN));
+		rpdfs_tblk_memcpy(tblk, &item->val[0], val, val_size);
+		rpdfs_tblk_zero_tail(tblk, &item->val[0], val_size,
+				     ALIGN(val_size, RPDFS_BTREE_ITEM_ALIGN));
 	}
 
 	return item;
@@ -799,26 +799,26 @@ static struct ngnfs_btree_item *insert_item(struct ngnfs_txn_block *tblk,
  * offset or maintaining the metadata to always know the sort position
  * of the item at the last offset.
  */
-static void delete_item(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block *bt, u16 ind)
+static void delete_item(struct rpdfs_txn_block *tblk, struct rpdfs_btree_block *bt, u16 ind)
 {
-	struct ngnfs_btree_item *item = item_from_ind(bt, ind);
+	struct rpdfs_btree_item *item = item_from_ind(bt, ind);
 	u16 bytes = aligned_item_size(item_val_size(bt, ind));
 	u16 off = le16_to_cpu(bt->ihdrs[ind].off);
 	u16 nr;
 
-	BUG_ON(le16_to_cpu(bt->tail_free) + bytes > NGNFS_BTREE_MAX_FREE);
-	BUG_ON(le16_to_cpu(bt->total_free) + bytes > NGNFS_BTREE_MAX_FREE);
+	BUG_ON(le16_to_cpu(bt->tail_free) + bytes > RPDFS_BTREE_MAX_FREE);
+	BUG_ON(le16_to_cpu(bt->total_free) + bytes > RPDFS_BTREE_MAX_FREE);
 
-	if (off == NGNFS_BLOCK_SIZE - le16_to_cpu(bt->tail_free) - bytes)
-		ngnfs_tblk_le16_add_cpu(tblk, &bt->tail_free, bytes);
-	ngnfs_tblk_le16_add_cpu(tblk, &bt->total_free, bytes);
+	if (off == RPDFS_BLOCK_SIZE - le16_to_cpu(bt->tail_free) - bytes)
+		rpdfs_tblk_le16_add_cpu(tblk, &bt->tail_free, bytes);
+	rpdfs_tblk_le16_add_cpu(tblk, &bt->total_free, bytes);
 
 	memmove_item_headers(tblk, bt, ind + 1, -1);
-	ngnfs_tblk_le16_add_cpu(tblk, &bt->nr_items, -1);
+	rpdfs_tblk_le16_add_cpu(tblk, &bt->nr_items, -1);
 
 	nr = le16_to_cpu(bt->nr_items);
-	ngnfs_tblk_memset(tblk, &bt->ihdrs[nr], 0, sizeof(struct ngnfs_btree_item_header));
-	ngnfs_tblk_memset(tblk, item, 0, bytes);
+	rpdfs_tblk_memset(tblk, &bt->ihdrs[nr], 0, sizeof(struct rpdfs_btree_item_header));
+	rpdfs_tblk_memset(tblk, item, 0, bytes);
 }
 
 /*
@@ -830,42 +830,42 @@ static void delete_item(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block *
  * here. The caller must ensure that there is sufficient free space for
  * the item.
  */
-static struct ngnfs_btree_item *replace_item(struct ngnfs_txn_block *tblk,
-					     struct ngnfs_btree_block *bt, u16 ind,
-					     struct ngnfs_btree_key *key, void *val, u16 val_size)
+static struct rpdfs_btree_item *replace_item(struct rpdfs_txn_block *tblk,
+					     struct rpdfs_btree_block *bt, u16 ind,
+					     struct rpdfs_btree_key *key, void *val, u16 val_size)
 {
 	u16 off = le16_to_cpu(bt->ihdrs[ind].off);
-	u16 tail = NGNFS_BLOCK_SIZE - le16_to_cpu(bt->tail_free);
+	u16 tail = RPDFS_BLOCK_SIZE - le16_to_cpu(bt->tail_free);
 	u16 old_size = item_val_size(bt, ind);
 	u16 old_bytes = aligned_item_size(old_size);
 	u16 val_bytes = aligned_item_size(val_size);
-	struct ngnfs_btree_item *item = item_from_ind(bt, ind);
+	struct rpdfs_btree_item *item = item_from_ind(bt, ind);
 
-	BUG_ON(ind >= NGNFS_BTREE_MAX_ITEMS);
-	BUG_ON(le16_to_cpu(bt->tail_free) - val_bytes + old_bytes > NGNFS_BTREE_MAX_FREE);
-	BUG_ON(le16_to_cpu(bt->total_free) - val_bytes + old_bytes > NGNFS_BTREE_MAX_FREE);
+	BUG_ON(ind >= RPDFS_BTREE_MAX_ITEMS);
+	BUG_ON(le16_to_cpu(bt->tail_free) - val_bytes + old_bytes > RPDFS_BTREE_MAX_FREE);
+	BUG_ON(le16_to_cpu(bt->total_free) - val_bytes + old_bytes > RPDFS_BTREE_MAX_FREE);
 
 	if (off == tail - old_bytes) {
 		/* old item at tail, update in place, adjust tail free */
-		ngnfs_tblk_le16_add_cpu(tblk, &bt->tail_free, old_bytes - val_bytes);
+		rpdfs_tblk_le16_add_cpu(tblk, &bt->tail_free, old_bytes - val_bytes);
 
 	} else if (val_bytes > old_bytes) {
 		/* allocate from tail, zero out old value */
-		ngnfs_tblk_assign(tblk, bt->ihdrs[ind].off, cpu_to_le16(tail));
-		ngnfs_tblk_le16_add_cpu(tblk, &bt->tail_free, -val_bytes);
-		ngnfs_tblk_memset(tblk, item, 0, old_size);
+		rpdfs_tblk_assign(tblk, bt->ihdrs[ind].off, cpu_to_le16(tail));
+		rpdfs_tblk_le16_add_cpu(tblk, &bt->tail_free, -val_bytes);
+		rpdfs_tblk_memset(tblk, item, 0, old_size);
 		item = item_from_ind(bt, ind);
 	}
 
 	if (val_size) {
 		/* copy the value and zero out the tail */
-		ngnfs_tblk_memcpy(tblk, &item->val[0], val, val_size);
+		rpdfs_tblk_memcpy(tblk, &item->val[0], val, val_size);
 		if (val_size < old_size)
-			ngnfs_tblk_zero_tail(tblk, &item->val[0], val_size, old_size);
+			rpdfs_tblk_zero_tail(tblk, &item->val[0], val_size, old_size);
 	}
 
-	ngnfs_tblk_le16_add_cpu(tblk, &bt->total_free, old_bytes - val_bytes);
-	ngnfs_tblk_assign(tblk, bt->ihdrs[ind].val_size, cpu_to_le16(val_size));
+	rpdfs_tblk_le16_add_cpu(tblk, &bt->total_free, old_bytes - val_bytes);
+	rpdfs_tblk_assign(tblk, bt->ihdrs[ind].val_size, cpu_to_le16(val_size));
 
 	return item;
 }
@@ -878,10 +878,10 @@ static struct ngnfs_btree_item *replace_item(struct ngnfs_txn_block *tblk,
  * (The inds array allocation could easily use static per-cpu buffers
  * instead.)
  */
-static int compact_items(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block *bt)
+static int compact_items(struct rpdfs_txn_block *tblk, struct rpdfs_btree_block *bt)
 {
-	struct ngnfs_btree_item *item;
-	struct ngnfs_btree_item *dst;
+	struct rpdfs_btree_item *item;
+	struct rpdfs_btree_item *dst;
 	u16 *inds;
 	u16 ind;
 	u16 bytes;
@@ -902,7 +902,7 @@ static int compact_items(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block 
 
 	sort_r(inds, nr, sizeof(inds[0]), cmp_ihdr_off, NULL, bt);
 
-	off = NGNFS_BLOCK_SIZE - NGNFS_BTREE_MAX_FREE;
+	off = RPDFS_BLOCK_SIZE - RPDFS_BTREE_MAX_FREE;
 	for (i = 0; i < nr; i++) {
 		ind = inds[i];
 		item = item_from_ind(bt, ind);
@@ -910,8 +910,8 @@ static int compact_items(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block 
 
 		if (le16_to_cpu(bt->ihdrs[ind].off) != off) {
 			dst = item_from_off(bt, off);
-			ngnfs_tblk_assign(tblk, bt->ihdrs[ind].off, cpu_to_le16(off));
-			ngnfs_tblk_memmove(tblk, dst, item, bytes);
+			rpdfs_tblk_assign(tblk, bt->ihdrs[ind].off, cpu_to_le16(off));
+			rpdfs_tblk_memmove(tblk, dst, item, bytes);
 		}
 
 		off += bytes;
@@ -919,9 +919,9 @@ static int compact_items(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block 
 
 	/* zero newly free region before the existing free region at the tail */
 	bytes = le16_to_cpu(bt->total_free) - le16_to_cpu(bt->tail_free);
-	ngnfs_tblk_memset(tblk, item_from_off(bt, off), 0, bytes);
+	rpdfs_tblk_memset(tblk, item_from_off(bt, off), 0, bytes);
 
-	ngnfs_tblk_assign(tblk, bt->tail_free, bt->total_free);
+	rpdfs_tblk_assign(tblk, bt->tail_free, bt->total_free);
 
 	kfree(inds);
 	return 0;
@@ -945,11 +945,11 @@ static int compact_items(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block 
  * the dst block has at least as many bytes used by items as the src
  * block.  Otherwise it tries to move all the items from the src block.
  */
-static int move_items(struct ngnfs_txn_block *dst_tblk, struct ngnfs_btree_block *dst,
-		      struct ngnfs_txn_block *src_tblk, struct ngnfs_btree_block *src,
+static int move_items(struct rpdfs_txn_block *dst_tblk, struct rpdfs_btree_block *dst,
+		      struct rpdfs_txn_block *src_tblk, struct rpdfs_btree_block *src,
 		      bool to_right, bool until_balanced)
 {
-	struct ngnfs_btree_item *item;
+	struct rpdfs_btree_item *item;
 	u16 src_ind;
 	u16 dst_ind;
 	int ret;
@@ -992,10 +992,10 @@ out:
 /*
  * The caller must have initialized the child's last key for the parent's ref item.
  */
-static void insert_parent_ref(struct ngnfs_txn_block *tblk, struct ngnfs_btree_block *parent,
-			      u16 ind, struct ngnfs_btree_block *child)
+static void insert_parent_ref(struct rpdfs_txn_block *tblk, struct rpdfs_btree_block *parent,
+			      u16 ind, struct rpdfs_btree_block *child)
 {
-	struct ngnfs_block_ref ref;
+	struct rpdfs_block_ref ref;
 
 	init_ref(&ref, child);
 	insert_item(tblk, parent, ind, &child->last, &ref, sizeof(ref));
@@ -1007,10 +1007,10 @@ static void insert_parent_ref(struct ngnfs_txn_block *tblk, struct ngnfs_btree_b
  * traversal into a newly allocated result of a split.
  */
 struct traversal_blocks {
-	struct ngnfs_txn_block *parent_tblk;
-	struct ngnfs_btree_block *parent;
-	struct ngnfs_txn_block *tblk;
-	struct ngnfs_btree_block *bt;
+	struct rpdfs_txn_block *parent_tblk;
+	struct rpdfs_btree_block *parent;
+	struct rpdfs_txn_block *tblk;
+	struct rpdfs_btree_block *bt;
 };
 
 static void init_traversal_blocks(struct traversal_blocks *trav)
@@ -1023,46 +1023,46 @@ static void init_traversal_blocks(struct traversal_blocks *trav)
  * inner last,first key range boundary to reflect the key of the last
  * item in the left block.
  */
-static void reset_key_range_boundary(struct ngnfs_txn_block *left_tblk,
-				     struct ngnfs_btree_block *left,
-				     struct ngnfs_txn_block *right_tblk,
-				     struct ngnfs_btree_block *right)
+static void reset_key_range_boundary(struct rpdfs_txn_block *left_tblk,
+				     struct rpdfs_btree_block *left,
+				     struct rpdfs_txn_block *right_tblk,
+				     struct rpdfs_btree_block *right)
 {
-	struct ngnfs_btree_key key;
+	struct rpdfs_btree_key key;
 
 	BUG_ON(compare_keys(&left->first, &right->last) >= 0);
 
 	key = last_item(left)->key;
-	ngnfs_tblk_assign(left_tblk, left->last, key);
-	ngnfs_btree_key_inc(&key);
-	ngnfs_tblk_assign(right_tblk, right->first, key);
+	rpdfs_tblk_assign(left_tblk, left->last, key);
+	rpdfs_btree_key_inc(&key);
+	rpdfs_tblk_assign(right_tblk, right->first, key);
 }
 
 /*
  * Allocate a new btree block and point the root block ref at it.  The
  * caller will initialize it as a new leaf block or new parent block.
  */
-static int alloc_root_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			    struct ngnfs_txn_block *root_tblk, struct ngnfs_btree_root *root,
-			    struct ngnfs_txn_block **tblkp, struct ngnfs_btree_block **btp)
+static int alloc_root_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			    struct rpdfs_txn_block *root_tblk, struct rpdfs_btree_root *root,
+			    struct rpdfs_txn_block **tblkp, struct rpdfs_btree_block **btp)
 {
-	struct ngnfs_block_ref ref;
+	struct rpdfs_block_ref ref;
 	u64 bnr;
 	int ret;
 
-	ret = ngnfs_txn_alloc_meta(txn, &bnr);
+	ret = rpdfs_txn_alloc_meta(txn, &bnr);
 	if (ret < 0)
 		goto out;
 
-	ret = ngnfs_txn_get_block(nfi, txn, bnr, NBF_WRITE | NBF_NEW, tblkp, (void **)btp);
+	ret = rpdfs_txn_get_block(nfi, txn, bnr, NBF_WRITE | NBF_NEW, tblkp, (void **)btp);
 	if (ret < 0)
 		goto out;
 
 	init_block(*tblkp, *btp, bnr, root->height, &min_key, &max_key);
 
 	init_ref(&ref, *btp);
-	ngnfs_tblk_assign(root_tblk, root->ref, ref);
-	ngnfs_tblk_assign(root_tblk, root->height, root->height + 1);
+	rpdfs_tblk_assign(root_tblk, root->ref, ref);
+	rpdfs_tblk_assign(root_tblk, root->height, root->height + 1);
 	ret = 0;
 out:
 	return ret;
@@ -1072,12 +1072,12 @@ out:
  * See if we can free the root block.  We can either free a parent with
  * a single ref item or a leaf with no items, never both.
  */
-static int check_free_root_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-				 struct ngnfs_txn_block *root_tblk, struct ngnfs_btree_root *root,
+static int check_free_root_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+				 struct rpdfs_txn_block *root_tblk, struct rpdfs_btree_root *root,
 				 struct traversal_blocks *trav)
 {
-	struct ngnfs_btree_block *bt = NULL;
-	struct ngnfs_block_ref ref;
+	struct rpdfs_btree_block *bt = NULL;
+	struct rpdfs_block_ref ref;
 	u8 level;
 
 	if (trav->parent && root->ref.bnr == trav->parent->bnr) {
@@ -1097,9 +1097,9 @@ static int check_free_root_block(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 
 	if (bt) {
 		level = bt->level;
-		/* ret = ngnfs_txn_free_meta(nfi, txn, tblk, le64_to_cpu(bt->bnr)) */
-		ngnfs_tblk_assign(root_tblk, root->ref, ref);
-		ngnfs_tblk_assign(root_tblk, root->height, level);
+		/* ret = rpdfs_txn_free_meta(nfi, txn, tblk, le64_to_cpu(bt->bnr)) */
+		rpdfs_tblk_assign(root_tblk, root->ref, ref);
+		rpdfs_tblk_assign(root_tblk, root->height, level);
 
 		if (bt == trav->parent) {
 			trav->parent_tblk = NULL;
@@ -1121,12 +1121,12 @@ static int check_free_root_block(struct ngnfs_fs_info *nfi, struct ngnfs_transac
  * a new parent item and don't have to modify the existing parent item's
  * key.
  */
-static int split_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-		       struct ngnfs_txn_block *root_tblk, struct ngnfs_btree_root *root,
-		       struct traversal_blocks *trav, struct ngnfs_btree_key *key, u16 bt_ind)
+static int split_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+		       struct rpdfs_txn_block *root_tblk, struct rpdfs_btree_root *root,
+		       struct traversal_blocks *trav, struct rpdfs_btree_key *key, u16 bt_ind)
 {
-	struct ngnfs_txn_block *nei_tblk;
-	struct ngnfs_btree_block *nei;
+	struct rpdfs_txn_block *nei_tblk;
+	struct rpdfs_btree_block *nei;
 	u64 bnr;
 	int ret;
 
@@ -1140,11 +1140,11 @@ static int split_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 	}
 
 	/* allocate and initialize new nei */
-	ret = ngnfs_txn_alloc_meta(txn, &bnr);
+	ret = rpdfs_txn_alloc_meta(txn, &bnr);
 	if (ret < 0)
 		goto out;
 
-	ret = ngnfs_txn_get_block(nfi, txn, bnr, NBF_WRITE | NBF_NEW, &nei_tblk, (void **)&nei);
+	ret = rpdfs_txn_get_block(nfi, txn, bnr, NBF_WRITE | NBF_NEW, &nei_tblk, (void **)&nei);
 	if (ret < 0)
 		goto out;
 
@@ -1180,15 +1180,15 @@ out:
  * the parent reference item that separates the items in the two child
  * blocks, regardless.
  */
-static int merge_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-		       struct ngnfs_txn_block *root_tblk, struct ngnfs_btree_root *root,
+static int merge_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+		       struct rpdfs_txn_block *root_tblk, struct rpdfs_btree_root *root,
 		       struct traversal_blocks *trav, u16 bt_ind)
 {
-	struct ngnfs_btree_item *nei_ref_item;
-	struct ngnfs_btree_item *ref_item;
-	struct ngnfs_txn_block *nei_tblk;
-	struct ngnfs_btree_block *nei;
-	struct ngnfs_block_ref ref;
+	struct rpdfs_btree_item *nei_ref_item;
+	struct rpdfs_btree_item *ref_item;
+	struct rpdfs_txn_block *nei_tblk;
+	struct rpdfs_btree_block *nei;
+	struct rpdfs_block_ref ref;
 	bool until_balanced;
 	bool to_right;
 	u16 nei_ind;
@@ -1203,9 +1203,9 @@ static int merge_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 	nei_ref_item = item_from_ind(trav->parent, nei_ind);
 
 	/* get neighboring block */
-	memcpy(&ref, nei_ref_item->val, sizeof(struct ngnfs_block_ref));
+	memcpy(&ref, nei_ref_item->val, sizeof(struct rpdfs_block_ref));
 	bnr = le64_to_cpu(ref.bnr);
-	ret = ngnfs_txn_get_block(nfi, txn, bnr, NBF_WRITE, &nei_tblk, (void **)&nei);
+	ret = rpdfs_txn_get_block(nfi, txn, bnr, NBF_WRITE, &nei_tblk, (void **)&nei);
 	if (ret < 0)
 		goto out;
 
@@ -1215,13 +1215,13 @@ static int merge_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 	 * threshold, otherwise merge them.
 	 */
 	until_balanced = le16_to_cpu(trav->bt->total_free) + le16_to_cpu(nei->total_free) <
-			 (NGNFS_BTREE_MERGE_FREE_THRESH * 2);
+			 (RPDFS_BTREE_MERGE_FREE_THRESH * 2);
 
 	/* expand our range so we can insert nei's items without triggering assertions */
 	if (to_right)
-		ngnfs_tblk_assign(trav->tblk, trav->bt->first, nei->first);
+		rpdfs_tblk_assign(trav->tblk, trav->bt->first, nei->first);
 	else
-		ngnfs_tblk_assign(trav->tblk, trav->bt->last, nei->last);
+		rpdfs_tblk_assign(trav->tblk, trav->bt->last, nei->last);
 
 	ret = move_items(trav->tblk, trav->bt, nei_tblk, nei, to_right, until_balanced);
 	if (ret < 0)
@@ -1231,7 +1231,7 @@ static int merge_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 	if (nei->nr_items != 0) {
 		if (to_right) {
 			reset_key_range_boundary(nei_tblk, nei, trav->tblk, trav->bt);
-			ngnfs_tblk_assign(trav->parent_tblk, nei_ref_item->key, nei->last);
+			rpdfs_tblk_assign(trav->parent_tblk, nei_ref_item->key, nei->last);
 		} else {
 			reset_key_range_boundary(trav->tblk, trav->bt, nei_tblk, nei);
 		}
@@ -1239,7 +1239,7 @@ static int merge_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 
 	/* update our parent ref if our last changed */
 	if (!to_right)
-		ngnfs_tblk_assign(trav->parent_tblk, ref_item->key, trav->bt->last);
+		rpdfs_tblk_assign(trav->parent_tblk, ref_item->key, trav->bt->last);
 
 	/* delete ref to empty neighbor, maybe free parent with single item */
 	if (nei->nr_items == 0) {
@@ -1287,9 +1287,9 @@ enum {
 	TSM_DENIED,
 };
 
-static int try_split_merge(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			   struct ngnfs_txn_block *root_tblk, struct ngnfs_btree_root *root,
-			   struct traversal_blocks *trav, struct ngnfs_btree_key *key,
+static int try_split_merge(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			   struct rpdfs_txn_block *root_tblk, struct rpdfs_btree_root *root,
+			   struct traversal_blocks *trav, struct rpdfs_btree_key *key,
 			   int val_size, int old_size, int op, bool deny)
 {
 	bool splitting;
@@ -1309,7 +1309,7 @@ static int try_split_merge(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 		/* try to convert parent and block access to write, may retry */
 		if (trav->parent) {
 			bnr = le64_to_cpu(trav->parent->bnr);
-			ret = ngnfs_txn_get_block(nfi, txn, bnr, NBF_WRITE, &trav->parent_tblk,
+			ret = rpdfs_txn_get_block(nfi, txn, bnr, NBF_WRITE, &trav->parent_tblk,
 						  (void **)&trav->parent);
 			if (ret < 0)
 				goto out;
@@ -1320,7 +1320,7 @@ static int try_split_merge(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 		}
 
 		bnr = le64_to_cpu(trav->bt->bnr);
-		ret = ngnfs_txn_get_block(nfi, txn, bnr, NBF_WRITE, &trav->tblk,
+		ret = rpdfs_txn_get_block(nfi, txn, bnr, NBF_WRITE, &trav->tblk,
 					  (void **)&trav->bt);
 		if (ret < 0)
 			goto out;
@@ -1350,13 +1350,13 @@ out:
  * readers don't need parents nor write txn block pointers for
  * modification.
  */
-static int readable_leaf(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			 struct ngnfs_btree_root *root, struct ngnfs_btree_block **btp,
-			 struct ngnfs_btree_key *key)
+static int readable_leaf(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			 struct rpdfs_btree_root *root, struct rpdfs_btree_block **btp,
+			 struct rpdfs_btree_key *key)
 {
-	struct ngnfs_btree_item *item;
-	struct ngnfs_btree_block *bt;
-	struct ngnfs_block_ref ref;
+	struct rpdfs_btree_item *item;
+	struct rpdfs_btree_block *bt;
+	struct rpdfs_block_ref ref;
 	int level;
 	u64 bnr;
 	u16 ind;
@@ -1367,7 +1367,7 @@ static int readable_leaf(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *tx
 
 	for (level = root->height - 1; level >= 0; level--) {
 		bnr = le64_to_cpu(ref.bnr);
-		ret = ngnfs_txn_get_block(nfi, txn, bnr, NBF_READ, NULL, (void **)&bt);
+		ret = rpdfs_txn_get_block(nfi, txn, bnr, NBF_READ, NULL, (void **)&bt);
 		if (ret < 0)
 			goto out;
 
@@ -1381,7 +1381,7 @@ static int readable_leaf(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *tx
 
 			/* XXX relies on block verification */
 			item = item_from_ind(bt, ind);
-			memcpy(&ref, item->val, sizeof(struct ngnfs_block_ref));
+			memcpy(&ref, item->val, sizeof(struct rpdfs_block_ref));
 		}
 	}
 
@@ -1402,12 +1402,12 @@ out:
  * split or merge the leaf once before needing to walk the tree again to
  * split and merge parents.
  */
-static int writable_leaf(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			 struct ngnfs_txn_block *root_tblk, struct ngnfs_btree_root *root,
-			 struct traversal_blocks *trav, struct ngnfs_btree_key *key)
+static int writable_leaf(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			 struct rpdfs_txn_block *root_tblk, struct rpdfs_btree_root *root,
+			 struct traversal_blocks *trav, struct rpdfs_btree_key *key)
 {
-	struct ngnfs_btree_item *item;
-	struct ngnfs_block_ref ref;
+	struct rpdfs_btree_item *item;
+	struct rpdfs_block_ref ref;
 	int level;
 	nbf_t nbf;
 	u64 bnr;
@@ -1421,7 +1421,7 @@ static int writable_leaf(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *tx
 		/* start by getting read access to parents, write to only leaf */
 		nbf = level == 0 ? NBF_WRITE : NBF_READ;
 		bnr = le64_to_cpu(ref.bnr);
-		ret = ngnfs_txn_get_block(nfi, txn, bnr, nbf, &trav->tblk, (void **)&trav->bt);
+		ret = rpdfs_txn_get_block(nfi, txn, bnr, nbf, &trav->tblk, (void **)&trav->bt);
 		if (ret < 0)
 			goto out;
 
@@ -1430,8 +1430,8 @@ static int writable_leaf(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *tx
 
 		/* ensure that parent is prepared for child split/merge */
 		ret = try_split_merge(nfi, txn, root_tblk, root, trav, key,
-				      sizeof(struct ngnfs_block_ref),
-				      sizeof(struct ngnfs_block_ref), BOP_PREPARE, false);
+				      sizeof(struct rpdfs_block_ref),
+				      sizeof(struct rpdfs_block_ref), BOP_PREPARE, false);
 		if (ret < 0)
 			goto out;
 
@@ -1444,7 +1444,7 @@ static int writable_leaf(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *tx
 
 		/* XXX relies on block verification */
 		item = item_from_ind(trav->bt, ind);
-		memcpy(&ref, item->val, sizeof(struct ngnfs_block_ref));
+		memcpy(&ref, item->val, sizeof(struct rpdfs_block_ref));
 		trav->parent_tblk = trav->tblk;
 		trav->parent = trav->bt;
 		trav->tblk = NULL;
@@ -1459,7 +1459,7 @@ out:
 	return ret;
 }
 
-void ngnfs_btree_key_inc(struct ngnfs_btree_key *key)
+void rpdfs_btree_key_inc(struct rpdfs_btree_key *key)
 {
 	int i;
 
@@ -1470,22 +1470,22 @@ void ngnfs_btree_key_inc(struct ngnfs_btree_key *key)
 	}
 }
 
-void ngnfs_btree_key_set_min(struct ngnfs_btree_key *key)
+void rpdfs_btree_key_set_min(struct rpdfs_btree_key *key)
 {
 	*key = min_key;
 }
 
-bool ngnfs_btree_key_is_min(struct ngnfs_btree_key *key)
+bool rpdfs_btree_key_is_min(struct rpdfs_btree_key *key)
 {
 	return compare_keys(key, &min_key) == 0;
 }
 
-void ngnfs_btree_key_set_max(struct ngnfs_btree_key *key)
+void rpdfs_btree_key_set_max(struct rpdfs_btree_key *key)
 {
 	*key = max_key;
 }
 
-bool ngnfs_btree_key_is_max(struct ngnfs_btree_key *key)
+bool rpdfs_btree_key_is_max(struct rpdfs_btree_key *key)
 {
 	return compare_keys(key, &max_key) == 0;
 }
@@ -1510,20 +1510,20 @@ bool ngnfs_btree_key_is_max(struct ngnfs_btree_key *key)
  * beyond that don't substantially increase the worst case number of
  * blocks referenced.
  */
-int ngnfs_btree_read_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			  struct ngnfs_btree_root *root, struct ngnfs_btree_key *key,
-			  struct ngnfs_btree_key *next, struct ngnfs_btree_key *last,
-			  ngnfs_btree_read_iter_fn_t iter, void *iter_arg)
+int rpdfs_btree_read_iter(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			  struct rpdfs_btree_root *root, struct rpdfs_btree_key *key,
+			  struct rpdfs_btree_key *next, struct rpdfs_btree_key *last,
+			  rpdfs_btree_read_iter_fn_t iter, void *iter_arg)
 {
-	struct ngnfs_btree_item *item;
-	struct ngnfs_btree_block *bt;
-	struct ngnfs_btree_key pos;
+	struct rpdfs_btree_item *item;
+	struct rpdfs_btree_block *bt;
+	struct rpdfs_btree_key pos;
 	int leaf_limit = 4;
 	u16 ind;
 	int ret;
 
 	if (next)
-		ngnfs_btree_key_set_min(next);
+		rpdfs_btree_key_set_min(next);
 	pos = *key;
 
 	for (;;) {
@@ -1540,20 +1540,20 @@ int ngnfs_btree_read_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *t
 			}
 
 			ret = iter(&item->key, item->val, item_val_size(bt, ind), iter_arg);
-			if (ret != NGNFS_BTREE_ITER_CONTINUE)
+			if (ret != RPDFS_BTREE_ITER_CONTINUE)
 				goto out;
 		}
 
 		/* done if block contained last key */
 		if ((last && compare_keys(&bt->last, last) >= 0) ||
-		    (!last && ngnfs_btree_key_is_max(&bt->last))) {
+		    (!last && rpdfs_btree_key_is_max(&bt->last))) {
 			ret = 0;
 			goto out;
 		}
 
 		/* continue on to next leaf */
 		pos = bt->last;
-		ngnfs_btree_key_inc(&pos);
+		rpdfs_btree_key_inc(&pos);
 
 		/* but finish if leaf limit reached */
 		if (--leaf_limit == 0) {
@@ -1590,15 +1590,15 @@ out:
  * that will fit in a very small number of leaves.  We'll want to expand this
  * a bit to provide a key for continuing iteration.
  */
-int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			   struct ngnfs_txn_block *root_tblk, struct ngnfs_btree_root *root,
-			   struct ngnfs_btree_key *key, struct ngnfs_btree_key *last,
-			   ngnfs_btree_write_iter_fn_t iter, void *iter_arg)
+int rpdfs_btree_write_iter(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			   struct rpdfs_txn_block *root_tblk, struct rpdfs_btree_root *root,
+			   struct rpdfs_btree_key *key, struct rpdfs_btree_key *last,
+			   rpdfs_btree_write_iter_fn_t iter, void *iter_arg)
 {
-	struct ngnfs_btree_item *item;
+	struct rpdfs_btree_item *item;
 	struct traversal_blocks trav;
-	struct ngnfs_btree_key pos;
-	struct ngnfs_btree_op op;
+	struct rpdfs_btree_key pos;
+	struct rpdfs_btree_op op;
 	bool deny_split_merge;
 	u16 ind;
 	int iter_ret;
@@ -1632,7 +1632,7 @@ int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 			/* advance to next leaf when it has items within caller last */
 			if (!item && trav.bt && compare_keys(&trav.bt->last, last) < 0) {
 				pos = trav.bt->last;
-				ngnfs_btree_key_inc(&pos);
+				rpdfs_btree_key_inc(&pos);
 				break;
 			}
 
@@ -1640,13 +1640,13 @@ int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 			if (item && compare_keys(&item->key, last) > 0)
 				item = NULL;
 
-			memset(&op, 0, sizeof(struct ngnfs_btree_op));
+			memset(&op, 0, sizeof(struct rpdfs_btree_op));
 			if (item)
 				iter_ret = iter(&item->key, item->val, item_val_size(trav.bt, ind),
 						iter_arg, &op);
 			else
 				iter_ret = iter(last, NULL, 0, iter_arg, &op);
-			if (iter_ret < 0 && iter_ret != NGNFS_BTREE_ITER_CONTINUE) {
+			if (iter_ret < 0 && iter_ret != RPDFS_BTREE_ITER_CONTINUE) {
 				ret = iter_ret;
 				goto out;
 			}
@@ -1726,7 +1726,7 @@ int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 			}
 
 			/* return non-_CONTINUE after operation */
-			if (iter_ret != NGNFS_BTREE_ITER_CONTINUE) {
+			if (iter_ret != RPDFS_BTREE_ITER_CONTINUE) {
 				ret = iter_ret;
 				goto out;
 			}

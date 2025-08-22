@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_TRACE_H
-#define NGNFS_SHARED_TRACE_H
+#ifndef RPDFS_SHARED_TRACE_H
+#define RPDFS_SHARED_TRACE_H
 
 #include <stdio.h>
 #include <pthread.h>
@@ -64,7 +64,7 @@ static inline u32 trace_chunk_round(u32 off, u32 size)
 static inline void *trace_entry_ptr(u16 id, size_t size)
 {
 	struct trace_thread_private *tpriv = trace_get_tpriv();
-	struct ngnfs_trace_event *tev;
+	struct rpdfs_trace_event *tev;
 	size_t off;
 
 	off = (tpriv->offset + trace_chunk_round(tpriv->offset, size)) & tpriv->mask;
@@ -76,7 +76,7 @@ static inline void *trace_entry_ptr(u16 id, size_t size)
 	tev->_pad = 0;
 	tev->tick = caa_get_cycles();
 
-	((struct ngnfs_trace_event *)((void *)tev + size))->size = 0;
+	((struct rpdfs_trace_event *)((void *)tev + size))->size = 0;
 
 	return tev + 1;
 }

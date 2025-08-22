@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_DTRACEF_H
-#define NGNFS_SHARED_DTRACEF_H
+#ifndef RPDFS_SHARED_DTRACEF_H
+#define RPDFS_SHARED_DTRACEF_H
 
 #include <unistd.h>
 #include <stdio.h>
@@ -73,12 +73,12 @@ do {										\
 	__check_printf_args(FMT_, __VA_ARGS__);					\
 										\
 	if (dtracef_enabled) {							\
-		struct ngnfs_dtracef_event *ev_ = dtracef_get_event(&site_);	\
+		struct rpdfs_dtracef_event *ev_ = dtracef_get_event(&site_);	\
 		VA_FOR_EACH_N(__store_args, __VA_ARGS__);			\
 	}									\
 } while (0)
 
-struct ngnfs_dtracef_event *dtracef_get_event(struct dtracef_site *site);
+struct rpdfs_dtracef_event *dtracef_get_event(struct dtracef_site *site);
 void dtracef_register_site(struct dtracef_site *site);
 int dtracef_print_trace_mem(void *addr, size_t size);
 

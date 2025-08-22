@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_HASH_TABLE_H
-#define NGNFS_SHARED_HASH_TABLE_H
+#ifndef RPDFS_SHARED_HASH_TABLE_H
+#define RPDFS_SHARED_HASH_TABLE_H
 
 struct hash_table;
 

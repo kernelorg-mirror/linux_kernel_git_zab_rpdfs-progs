@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_BTREE_H
-#define NGNFS_SHARED_BTREE_H
+#ifndef RPDFS_SHARED_BTREE_H
+#define RPDFS_SHARED_BTREE_H
 
 #include "shared/lk/limits.h"
 
@@ -14,9 +14,9 @@
  * is ignored and iteration continues.  It's a negated impossibly large
  * errno so it shouldn't be confused with valid -errno.
  */
-#define NGNFS_BTREE_ITER_CONTINUE	INT_MIN
+#define RPDFS_BTREE_ITER_CONTINUE	INT_MIN
 
-typedef int (*ngnfs_btree_read_iter_fn_t)(struct ngnfs_btree_key *key, void *val,
+typedef int (*rpdfs_btree_read_iter_fn_t)(struct rpdfs_btree_key *key, void *val,
 					  size_t val_size, void *arg);
 
 /*
@@ -41,8 +41,8 @@ enum {
 /*
  * Describes the btree operation that should be done.
  */
-struct ngnfs_btree_op {
-	struct ngnfs_btree_key key;
+struct rpdfs_btree_op {
+	struct rpdfs_btree_key key;
 	void *val;
 	size_t val_size;
 	size_t old_size;	/* 0 or size of value to replace */
@@ -62,30 +62,30 @@ struct ngnfs_btree_op {
  * initialized to 0 to not perform any operation.
  *
  * After performing the operation, if the return wasn't
- * NGNFS_BTREE_ITER_CONTINUE then iteration stops and the non-_CONTINUE
+ * RPDFS_BTREE_ITER_CONTINUE then iteration stops and the non-_CONTINUE
  * status is returned to the caller.
  *
  * If an attempt to perform an operation fails then it can return an
  * error that overrides whatever may have been returned by the iter fn.
  */
-typedef int (*ngnfs_btree_write_iter_fn_t)(struct ngnfs_btree_key *key, void *val, size_t size,
-					   void *arg, struct ngnfs_btree_op *op);
+typedef int (*rpdfs_btree_write_iter_fn_t)(struct rpdfs_btree_key *key, void *val, size_t size,
+					   void *arg, struct rpdfs_btree_op *op);
 
-void ngnfs_btree_key_inc(struct ngnfs_btree_key *key);
-void ngnfs_btree_key_set_min(struct ngnfs_btree_key *key);
-bool ngnfs_btree_key_is_min(struct ngnfs_btree_key *key);
-void ngnfs_btree_key_set_max(struct ngnfs_btree_key *key);
-bool ngnfs_btree_key_is_max(struct ngnfs_btree_key *key);
+void rpdfs_btree_key_inc(struct rpdfs_btree_key *key);
+void rpdfs_btree_key_set_min(struct rpdfs_btree_key *key);
+bool rpdfs_btree_key_is_min(struct rpdfs_btree_key *key);
+void rpdfs_btree_key_set_max(struct rpdfs_btree_key *key);
+bool rpdfs_btree_key_is_max(struct rpdfs_btree_key *key);
 
-int ngnfs_btree_read_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			  struct ngnfs_btree_root *root, struct ngnfs_btree_key *key,
-			  struct ngnfs_btree_key *next, struct ngnfs_btree_key *last,
-			  ngnfs_btree_read_iter_fn_t iter, void *iter_arg);
-int ngnfs_btree_write_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			   struct ngnfs_txn_block *root_tblk, struct ngnfs_btree_root *root,
-			   struct ngnfs_btree_key *key, struct ngnfs_btree_key *last,
-			   ngnfs_btree_write_iter_fn_t iter, void *iter_arg);
+int rpdfs_btree_read_iter(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			  struct rpdfs_btree_root *root, struct rpdfs_btree_key *key,
+			  struct rpdfs_btree_key *next, struct rpdfs_btree_key *last,
+			  rpdfs_btree_read_iter_fn_t iter, void *iter_arg);
+int rpdfs_btree_write_iter(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			   struct rpdfs_txn_block *root_tblk, struct rpdfs_btree_root *root,
+			   struct rpdfs_btree_key *key, struct rpdfs_btree_key *last,
+			   rpdfs_btree_write_iter_fn_t iter, void *iter_arg);
 
-int ngnfs_print_btree_block(struct ngnfs_fs_info *nfi, u64 bnr, char *str);
+int rpdfs_print_btree_block(struct rpdfs_fs_info *nfi, u64 bnr, char *str);
 
 #endif

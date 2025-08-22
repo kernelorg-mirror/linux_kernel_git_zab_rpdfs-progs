@@ -69,15 +69,15 @@
  * The second half is used by journal replay to move blocks from the
  * oldest live commit out of the journal.
  */
-#define MAX_PREPARED_ENTRIES (NGNFS_DEV_COMMIT_MAX_ENTRIES / 2)
+#define MAX_PREPARED_ENTRIES (RPDFS_DEV_COMMIT_MAX_ENTRIES / 2)
 
 static struct bstore_instance {
 	struct hash_table *stable_ht;
 	struct hash_table *dirty_ht;
 	struct summary_tree *smt;
-	struct ngnfs_uuid dev_uuid;
+	struct rpdfs_uuid dev_uuid;
 	bool have_uuid;
-	struct ngnfs_dev_commit_block stable_cmt;
+	struct rpdfs_dev_commit_block stable_cmt;
 
 	/* convenience, set from commit layout at init */
 	u64 commit_blocks;
@@ -89,7 +89,7 @@ static struct bstore_instance {
 
 	struct utask *commit_tsk;
 	struct utask_wait_queue commit_wq;
-	struct ngnfs_dev_commit_block *dirty_cmt;
+	struct rpdfs_dev_commit_block *dirty_cmt;
 	struct cached_block *dirty_cmt_cblk;
 	u64 commit_phase;
 	int last_commit_ret;
@@ -127,12 +127,12 @@ static int map_dev_bnr(struct bstore_instance *inst, struct dev_bnr_mapping *map
 
 	map->lba = inst->storage_lba + dev_bnr;
 
-	map->details_lba = inst->details_lba + (dev_bnr / NGNFS_DEV_DETAILS_PER_BLOCK);
-	map->details_ind = dev_bnr % NGNFS_DEV_DETAILS_PER_BLOCK;
+	map->details_lba = inst->details_lba + (dev_bnr / RPDFS_DEV_DETAILS_PER_BLOCK);
+	map->details_ind = dev_bnr % RPDFS_DEV_DETAILS_PER_BLOCK;
 
 	off = map->details_lba - inst->details_lba;
-	map->summary_lba = inst->summary_lba + (off / NGNFS_DEV_SUMMARIES_PER_BLOCK);
-	map->summary_ind = off % NGNFS_DEV_SUMMARIES_PER_BLOCK;
+	map->summary_lba = inst->summary_lba + (off / RPDFS_DEV_SUMMARIES_PER_BLOCK);
+	map->summary_ind = off % RPDFS_DEV_SUMMARIES_PER_BLOCK;
 
 	return 0;
 }
@@ -145,7 +145,7 @@ static int map_dev_bnr(struct bstore_instance *inst, struct dev_bnr_mapping *map
 static void map_details_lba(struct bstore_instance *inst, struct dev_bnr_mapping *map,
 			    u64 details_lba)
 {
-	u64 dev_bnr = (details_lba - inst->details_lba) * NGNFS_DEV_DETAILS_PER_BLOCK;
+	u64 dev_bnr = (details_lba - inst->details_lba) * RPDFS_DEV_DETAILS_PER_BLOCK;
 	int ret;
 
 	ret = map_dev_bnr(inst, map, dev_bnr);
@@ -185,17 +185,17 @@ static bool lba_in_journal(struct bstore_instance *inst, u64 lba)
 
 static bool type_has_header(u8 type)
 {
-	return type != NGNFS_DEV_BLOCK_TYPE_STORED;
+	return type != RPDFS_DEV_BLOCK_TYPE_STORED;
 }
 
 static u64 calc_block_crc(void *buf, bool has_header)
 {
-	size_t off = has_header ? sizeof_field(struct ngnfs_dev_block_header, crc) : 0;
+	size_t off = has_header ? sizeof_field(struct rpdfs_dev_block_header, crc) : 0;
 
-	return crc64_nvme(0, buf + off, NGNFS_BLOCK_SIZE - off);
+	return crc64_nvme(0, buf + off, RPDFS_BLOCK_SIZE - off);
 }
 
-static void init_hdr(struct bstore_instance *inst, struct ngnfs_dev_block_header *hdr, u8 type)
+static void init_hdr(struct bstore_instance *inst, struct rpdfs_dev_block_header *hdr, u8 type)
 {
 	hdr->crc = 0;
 	hdr->dev_uuid = inst->dev_uuid;
@@ -208,10 +208,10 @@ struct verify_hdr_args {
 	u8 type;
 };
 
-static bool init_zeroed_header(struct bstore_instance *inst, struct ngnfs_dev_block_header *hdr,
+static bool init_zeroed_header(struct bstore_instance *inst, struct rpdfs_dev_block_header *hdr,
 			       u8 type)
 {
-	if (type_has_header(type) && mem_is_zero(hdr, sizeof(struct ngnfs_dev_block_header))) {
+	if (type_has_header(type) && mem_is_zero(hdr, sizeof(struct rpdfs_dev_block_header))) {
 		init_hdr(inst, hdr, type);
 		return true;
 	}
@@ -221,7 +221,7 @@ static bool init_zeroed_header(struct bstore_instance *inst, struct ngnfs_dev_bl
 
 static int verify_hdr(struct cached_block *cblk, void *arg)
 {
-	struct ngnfs_dev_block_header *hdr = block_data_buf(cblk);
+	struct rpdfs_dev_block_header *hdr = block_data_buf(cblk);
 	struct verify_hdr_args *vha = arg;
 	struct bstore_instance *inst = vha->inst;
 	u64 crc;
@@ -235,7 +235,7 @@ static int verify_hdr(struct cached_block *cblk, void *arg)
 	/* only verify the uuid once we've read a block and read it */
 	if ((vha->type != hdr->type || crc != le64_to_cpu(hdr->crc)) ||
 	    (inst->have_uuid &&
-	     memcmp(&hdr->dev_uuid, &inst->dev_uuid, sizeof(struct ngnfs_uuid)))) {
+	     memcmp(&hdr->dev_uuid, &inst->dev_uuid, sizeof(struct rpdfs_uuid)))) {
 		dtracef("bstore_verify_hdr_failed",
 			"exp type %u crc %016llx hdr type %u crc %016llx",
 			vha->type, crc, hdr->type, le64_to_cpu(hdr->crc));
@@ -316,7 +316,7 @@ static u64 journal_index_ctr_lba(struct bstore_instance *inst, u64 ctr)
 
 static int journal_used_pct(struct bstore_instance *inst)
 {
-	struct ngnfs_dev_commit_block *cmt = &inst->stable_cmt;
+	struct rpdfs_dev_commit_block *cmt = &inst->stable_cmt;
 	int c = (le64_to_cpu(cmt->commit_ctr) - le64_to_cpu(cmt->oldest_commit_ctr) + 1) * 100 /
 		inst->commit_blocks;
 	int j = (le64_to_cpu(cmt->journal_head_ctr) - le64_to_cpu(cmt->journal_tail_ctr)) * 100 /
@@ -345,10 +345,10 @@ static int journal_used_pct(struct bstore_instance *inst)
  */
 static int prepare_dirty_commit(struct bstore_instance *inst, u64 stable_ctr,
 			        struct list_head *pool, u16 block_count, bool is_replay,
-				struct ngnfs_dev_commit_block **cmt_ret)
+				struct rpdfs_dev_commit_block **cmt_ret)
 {
-	struct ngnfs_dev_commit_block *stable = &inst->stable_cmt;
-	struct ngnfs_dev_commit_block *cmt;
+	struct rpdfs_dev_commit_block *stable = &inst->stable_cmt;
+	struct rpdfs_dev_commit_block *cmt;
 	u64 commit_ctr;
 	u64 lba;
 	int ret;
@@ -403,7 +403,7 @@ static int prepare_dirty_commit(struct bstore_instance *inst, u64 stable_ctr,
 		cmt = block_data_buf(inst->dirty_cmt_cblk);
 		inst->dirty_cmt = cmt;
 
-		init_hdr(inst, &cmt->hdr, NGNFS_DEV_BLOCK_TYPE_COMMIT);
+		init_hdr(inst, &cmt->hdr, RPDFS_DEV_BLOCK_TYPE_COMMIT);
 		cmt->layout = stable->layout;
 		cmt->commit_ctr = cpu_to_le64(commit_ctr);
 		cmt->oldest_commit_ctr = stable->oldest_commit_ctr;
@@ -432,7 +432,7 @@ out:
  */
 static bool retry_prepare_dirty(struct bstore_instance *inst, u64 stable_ctr, int *ret,
 				struct list_head *pool, u16 block_count, bool is_replay,
-				struct ngnfs_dev_commit_block **cmt_ret)
+				struct rpdfs_dev_commit_block **cmt_ret)
 {
 	if (stable_ctr != stable_commit_ctr(inst))
 		return true;
@@ -493,12 +493,12 @@ static int finish_dirty_commit(struct bstore_instance *inst, struct list_head *p
  * naming and buffer sharing a bit more complicated.  It'd probably be
  * worth it.
  */
-static void dirty_block(struct bstore_instance *inst, struct ngnfs_dev_commit_block *cmt,
+static void dirty_block(struct bstore_instance *inst, struct rpdfs_dev_commit_block *cmt,
 		        struct list_head *pool, u64 lba, u8 type, bool lba_unused,
 			struct page *data_page, struct cached_block *copy_from_cblk,
 			struct cached_block **cblk)
 {
-	struct ngnfs_dev_commit_entry *ent;
+	struct rpdfs_dev_commit_entry *ent;
 	u64 dlba;
 	u16 nr;
 	int ret;
@@ -525,7 +525,7 @@ static void dirty_block(struct bstore_instance *inst, struct ngnfs_dev_commit_bl
 
 	/* Callers must have prepared correct block count to ensure free entries */
 	nr = le16_to_cpu(cmt->nr_entries);
-	BUG_ON(nr >= NGNFS_DEV_COMMIT_MAX_ENTRIES);
+	BUG_ON(nr >= RPDFS_DEV_COMMIT_MAX_ENTRIES);
 	cmt->nr_entries = cpu_to_le16(nr + 1);
 	ent = &cmt->entries[nr];
 
@@ -541,9 +541,9 @@ static void dirty_block(struct bstore_instance *inst, struct ngnfs_dev_commit_bl
 	htable_insert(inst->dirty_ht, lba, dlba);
 
 	if (copy_from_cblk)
-		memcpy(block_data_buf(*cblk), block_data_buf(copy_from_cblk), NGNFS_BLOCK_SIZE);
+		memcpy(block_data_buf(*cblk), block_data_buf(copy_from_cblk), RPDFS_BLOCK_SIZE);
 	else if (!data_page)
-		memset(block_data_buf(*cblk), 0, NGNFS_BLOCK_SIZE);
+		memset(block_data_buf(*cblk), 0, RPDFS_BLOCK_SIZE);
 
 	init_zeroed_header(inst, block_data_buf(*cblk), type);
 
@@ -584,23 +584,23 @@ static u64 summarize_smt_words(u64 *words, unsigned short nr)
 	return summary;
 }
 
-static u64 summarize_summary_block(struct ngnfs_dev_summary_block *sblk)
+static u64 summarize_summary_block(struct rpdfs_dev_summary_block *sblk)
 {
 	u64 summary = 0;
 	int i;
 
-	for (i = 0; i < NGNFS_DEV_SUMMARIES_PER_BLOCK; i++)
+	for (i = 0; i < RPDFS_DEV_SUMMARIES_PER_BLOCK; i++)
 		summary = max(summary, le64_to_cpu(sblk->summaries[i]));
 
 	return summary;
 }
 
-static u64 summarize_details_block(struct ngnfs_dev_details_block *dblk)
+static u64 summarize_details_block(struct rpdfs_dev_details_block *dblk)
 {
 	u64 summary = 0;
 	int i;
 
-	for (i = 0; i < NGNFS_DEV_DETAILS_PER_BLOCK; i++)
+	for (i = 0; i < RPDFS_DEV_DETAILS_PER_BLOCK; i++)
 		summary = max(summary, le64_to_cpu(dblk->details[i].write_ctr));
 
 	return summary;
@@ -611,13 +611,13 @@ static u64 summarize_details_block(struct ngnfs_dev_details_block *dblk)
  */
 static int update_summary_block(struct bstore_instance *inst, u64 lba)
 {
-	struct ngnfs_dev_summary_block *sblk;
+	struct rpdfs_dev_summary_block *sblk;
 	struct cached_block *cblk;
 	u64 summary;
 	u64 pos;
 	int ret;
 
-	ret = read_block_hdr(inst, stable_lba(inst, lba), NGNFS_DEV_BLOCK_TYPE_SUMMARY, &cblk);
+	ret = read_block_hdr(inst, stable_lba(inst, lba), RPDFS_DEV_BLOCK_TYPE_SUMMARY, &cblk);
 	if (ret < 0)
 		goto out;
 
@@ -636,9 +636,9 @@ out:
  * Update the stable hash table's mapping of lbas to their stable
  * location in the journal.
  */
-static void update_commit_lbas(struct bstore_instance *inst, struct ngnfs_dev_commit_block *cmt)
+static void update_commit_lbas(struct bstore_instance *inst, struct rpdfs_dev_commit_block *cmt)
 {
-	struct ngnfs_dev_commit_entry *ent;
+	struct rpdfs_dev_commit_entry *ent;
 	int i;
 
 	/* update the htable so readers get either real lba or journaled location */
@@ -662,16 +662,16 @@ static void update_commit_lbas(struct bstore_instance *inst, struct ngnfs_dev_co
  * a commit.  This is only run as commits are successfully written.
  */
 static int update_commit_summaries(struct bstore_instance *inst,
-				   struct ngnfs_dev_commit_block *cmt)
+				   struct rpdfs_dev_commit_block *cmt)
 {
-	struct ngnfs_dev_commit_entry *ent;
+	struct rpdfs_dev_commit_entry *ent;
 	int ret;
 	int i;
 
 	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
 		ent = &cmt->entries[i];
 
-		if (ent->type == NGNFS_DEV_BLOCK_TYPE_SUMMARY) {
+		if (ent->type == RPDFS_DEV_BLOCK_TYPE_SUMMARY) {
 			ret = update_summary_block(inst, le64_to_cpu(ent->lba));
 			if (ret < 0)
 				goto out;
@@ -689,8 +689,8 @@ out:
  */
 static void update_dirty_summary(struct bstore_instance *inst, u64 det_lba)
 {
-	struct ngnfs_dev_details_block *dblk;
-	struct ngnfs_dev_summary_block *sblk;
+	struct rpdfs_dev_details_block *dblk;
+	struct rpdfs_dev_summary_block *sblk;
 	struct cached_block *det_cblk;
 	struct cached_block *sum_cblk;
 	struct dev_bnr_mapping map;
@@ -723,10 +723,10 @@ static void update_dirty_summary(struct bstore_instance *inst, u64 det_lba)
  * This finalizes the dirty blocks now that they won't be dirtied again.
  * We calculate their crcs and the summaries of modified detail blocks.
  */
-static void write_dirty_commit(struct bstore_instance *inst, struct ngnfs_dev_commit_block *cmt)
+static void write_dirty_commit(struct bstore_instance *inst, struct rpdfs_dev_commit_block *cmt)
 {
-	struct ngnfs_dev_commit_entry *ent;
-	struct ngnfs_dev_block_header *hdr;
+	struct rpdfs_dev_commit_entry *ent;
+	struct rpdfs_dev_block_header *hdr;
 	struct cached_block *cblk = NULL;
 	bool has_header;
 	u64 crc;
@@ -743,7 +743,7 @@ static void write_dirty_commit(struct bstore_instance *inst, struct ngnfs_dev_co
 	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
 		ent = &cmt->entries[i];
 
-		if (ent->type == NGNFS_DEV_BLOCK_TYPE_DETAILS)
+		if (ent->type == RPDFS_DEV_BLOCK_TYPE_DETAILS)
 			update_dirty_summary(inst, le64_to_cpu(ent->lba));
 	}
 
@@ -798,7 +798,7 @@ static void write_dirty_commit(struct bstore_instance *inst, struct ngnfs_dev_co
 static void commit_write_utask(void *data)
 {
 	struct bstore_instance *inst = &global_bstore_inst;
-	struct ngnfs_dev_commit_block *cmt;
+	struct rpdfs_dev_commit_block *cmt;
 
 	do {
 		utask_wait_event_task((cmt = inst->dirty_cmt));
@@ -839,9 +839,9 @@ static void commit_write_utask(void *data)
  */
 static void replay_oldest_commit(struct bstore_instance *inst)
 {
-	struct ngnfs_dev_commit_block *dirty_cmt;
-	struct ngnfs_dev_commit_block *cmt;
-	struct ngnfs_dev_commit_entry *ent;
+	struct rpdfs_dev_commit_block *dirty_cmt;
+	struct rpdfs_dev_commit_block *cmt;
+	struct rpdfs_dev_commit_entry *ent;
 	struct cached_block *dirty_cblk;
 	struct cached_block *cblk = NULL;
 	LIST_HEAD(pool);
@@ -854,7 +854,7 @@ static void replay_oldest_commit(struct bstore_instance *inst)
 
 	stable_ctr = le64_to_cpu(inst->stable_cmt.commit_ctr);
 	lba = commit_ctr_lba(inst, le64_to_cpu(inst->stable_cmt.oldest_commit_ctr));
-	ret = read_block_hdr(inst, lba, NGNFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
+	ret = read_block_hdr(inst, lba, RPDFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
 	if (ret < 0)
 		goto out;
 
@@ -969,7 +969,7 @@ int bstore_read(u64 dev_bnr, struct cached_block **cblk)
 
 		block_readahead(stable_lba(inst, map.lba));
 		ret = read_block_hdr(inst, stable_lba(inst, map.details_lba),
-				     NGNFS_DEV_BLOCK_TYPE_DETAILS, &det_cblk) ?:
+				     RPDFS_DEV_BLOCK_TYPE_DETAILS, &det_cblk) ?:
 		      block_read(stable_lba(inst, map.lba), cblk);
 
 	} while (stable_commit_ctr(inst) != ctr);
@@ -984,11 +984,11 @@ out:
 int bstore_write(u64 dev_bnr, struct page *data_page)
 {
 	struct bstore_instance *inst = &global_bstore_inst;
-	struct ngnfs_dev_details_block *dblk;
-	struct ngnfs_dev_commit_block *cmt;
-	struct ngnfs_block_details *stable_det = NULL;
-	struct ngnfs_block_details *in_det = NULL;
-	struct ngnfs_block_details *det;
+	struct rpdfs_dev_details_block *dblk;
+	struct rpdfs_dev_commit_block *cmt;
+	struct rpdfs_block_details *stable_det = NULL;
+	struct rpdfs_block_details *in_det = NULL;
+	struct rpdfs_block_details *det;
 	struct cached_block *det_cblk = NULL;
 	struct cached_block *sum_cblk = NULL;
 	struct cached_block *cblk = NULL;
@@ -1009,9 +1009,9 @@ int bstore_write(u64 dev_bnr, struct page *data_page)
 
 		block_readahead(stable_lba(inst, map.summary_lba));
 		ret = read_block_hdr(inst, stable_lba(inst, map.details_lba),
-				     NGNFS_DEV_BLOCK_TYPE_DETAILS, &det_cblk) ?:
+				     RPDFS_DEV_BLOCK_TYPE_DETAILS, &det_cblk) ?:
 		      read_block_hdr(inst, stable_lba(inst, map.summary_lba),
-				     NGNFS_DEV_BLOCK_TYPE_SUMMARY, &sum_cblk);
+				     RPDFS_DEV_BLOCK_TYPE_SUMMARY, &sum_cblk);
 
 	} while (retry_prepare_dirty(inst, nr, &ret, &pool, 3, false, &cmt));
 	if (ret < 0)
@@ -1023,7 +1023,7 @@ int bstore_write(u64 dev_bnr, struct page *data_page)
 	in_det = stable_det;
 
 	/* update the dirty block details for the write */
-	dirty_block(inst, cmt, &pool, map.details_lba, NGNFS_DEV_BLOCK_TYPE_DETAILS, false,
+	dirty_block(inst, cmt, &pool, map.details_lba, RPDFS_DEV_BLOCK_TYPE_DETAILS, false,
 		    NULL, det_cblk, &cblk);
 	dblk = block_data_buf(cblk);
 	det = &dblk->details[map.details_ind];
@@ -1035,12 +1035,12 @@ int bstore_write(u64 dev_bnr, struct page *data_page)
 	block_putp(&cblk);
 
 	/* make sure we have a dirty summary block for write-time updates */
-	dirty_block(inst, cmt, &pool, map.summary_lba, NGNFS_DEV_BLOCK_TYPE_SUMMARY, false,
+	dirty_block(inst, cmt, &pool, map.summary_lba, RPDFS_DEV_BLOCK_TYPE_SUMMARY, false,
 		    NULL, sum_cblk, &cblk);
 	block_putp(&cblk);
 
 	/* and dirty the stored block with a reference to the data page */
-	dirty_block(inst, cmt, &pool, map.lba, NGNFS_DEV_BLOCK_TYPE_STORED,
+	dirty_block(inst, cmt, &pool, map.lba, RPDFS_DEV_BLOCK_TYPE_STORED,
 		    !(le64_to_cpu(stable_det->lifetime_ctr) & 1), data_page, NULL, &cblk);
 	block_putp(&cblk);
 
@@ -1061,8 +1061,8 @@ out:
  */
 static int check_complete_commit(struct bstore_instance *inst, u64 commit_ctr)
 {
-	struct ngnfs_dev_commit_block *cmt;
-	struct ngnfs_dev_commit_entry *ent;
+	struct rpdfs_dev_commit_block *cmt;
+	struct rpdfs_dev_commit_entry *ent;
 	struct cached_block *cmt_cblk = NULL;
 	struct cached_block *cblk = NULL;
 	u64 journ_lba;
@@ -1072,7 +1072,7 @@ static int check_complete_commit(struct bstore_instance *inst, u64 commit_ctr)
 	int i;
 
 	lba = commit_ctr_lba(inst, commit_ctr);
-	ret = read_block_hdr(inst, lba, NGNFS_DEV_BLOCK_TYPE_COMMIT, &cmt_cblk);
+	ret = read_block_hdr(inst, lba, RPDFS_DEV_BLOCK_TYPE_COMMIT, &cmt_cblk);
 	if (ret < 0)
 		goto out;
 	cmt = block_data_buf(cmt_cblk);
@@ -1124,7 +1124,7 @@ out:
  */
 static int find_stable_commit(struct bstore_instance *inst, u64 *commit_ctr_ret)
 {
-	struct ngnfs_dev_commit_block *cmt;
+	struct rpdfs_dev_commit_block *cmt;
 	struct cached_block *cblk = NULL;
 	u64 greatest = 0;
 	u64 start = 0;
@@ -1153,7 +1153,7 @@ static int find_stable_commit(struct bstore_instance *inst, u64 *commit_ctr_ret)
 			le64_to_cpu(cmt->commit_ctr));
 
 		/* so far only trimming at format, 0s are unwritten tail */
-		if (cmt->hdr.type == NGNFS_DEV_BLOCK_TYPE_UNINIT) {
+		if (cmt->hdr.type == RPDFS_DEV_BLOCK_TYPE_UNINIT) {
 			if (lba == 0) {
 				/* format should have written to first commit block */
 				ret = -EINVAL;
@@ -1200,7 +1200,7 @@ out:
  */
 static int init_journal(struct bstore_instance *inst)
 {
-	struct ngnfs_dev_commit_block *cmt;
+	struct rpdfs_dev_commit_block *cmt;
 	struct cached_block *cblk = NULL;
 	u64 journal_blocks;
 	u64 summary_blocks;
@@ -1209,9 +1209,9 @@ static int init_journal(struct bstore_instance *inst)
 	int ret;
 
 	/* no trimming yet so we can always read the first few commit blocks */
-	ret = read_block_hdr(inst, 0, NGNFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
+	ret = read_block_hdr(inst, 0, RPDFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
 	if (ret < 0)
-		ret = read_block_hdr(inst, 1, NGNFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
+		ret = read_block_hdr(inst, 1, RPDFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
 	if (ret < 0)
 		goto out;
 
@@ -1245,8 +1245,8 @@ static int init_journal(struct bstore_instance *inst)
 	if (inst->commit_blocks < 256								||
 	    journal_blocks < 256								||
 	    journal_blocks >= ULONG_MAX								||
-	    summary_blocks < DIV_ROUND_UP(details_blocks, NGNFS_DEV_SUMMARIES_PER_BLOCK)	||
-	    details_blocks < DIV_ROUND_UP(inst->storage_blocks, NGNFS_DEV_DETAILS_PER_BLOCK)) {
+	    summary_blocks < DIV_ROUND_UP(details_blocks, RPDFS_DEV_SUMMARIES_PER_BLOCK)	||
+	    details_blocks < DIV_ROUND_UP(inst->storage_blocks, RPDFS_DEV_DETAILS_PER_BLOCK)) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -1281,14 +1281,14 @@ out:
  */
 static int load_commit_blocks(struct bstore_instance *inst, u64 commit_ctr)
 {
-	struct ngnfs_dev_commit_block *cmt;
+	struct rpdfs_dev_commit_block *cmt;
 	struct cached_block *cblk;
 	u64 lba;
 	u64 nr;
 	int ret;
 
 	lba = commit_ctr_lba(inst, commit_ctr);
-	ret = read_block_hdr(inst, lba, NGNFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
+	ret = read_block_hdr(inst, lba, RPDFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
 	if (ret < 0)
 		goto out;
 
@@ -1304,7 +1304,7 @@ static int load_commit_blocks(struct bstore_instance *inst, u64 commit_ctr)
 
 		readahead_batch(lba, 16, inst->journal_lba, 1);
 
-		ret = read_block_hdr(inst, lba, NGNFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
+		ret = read_block_hdr(inst, lba, RPDFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
 		if (ret < 0)
 			goto out;
 
@@ -1343,7 +1343,7 @@ int bstore_init(void)
 	utask_init_wait_queue(&inst->commit_wq);
 	utask_init_wait_queue(&inst->replay_wq);
 
-	inst->dirty_ht = htable_alloc(NGNFS_DEV_COMMIT_MAX_ENTRIES);
+	inst->dirty_ht = htable_alloc(RPDFS_DEV_COMMIT_MAX_ENTRIES);
 	if (!inst->dirty_ht) {
 		ret = -ENOMEM;
 		goto out;

@@ -54,16 +54,16 @@ static u64 name_hash(void *name, size_t name_len)
 
 	if ((name_len < 3) && (name_len > 0) && s[0] == '.') {
 		if (name_len == 1)
-			return NGNFS_DIRENT_DOT_HASH;
+			return RPDFS_DIRENT_DOT_HASH;
 
 		if (s[1] == '.')
-			return NGNFS_DIRENT_DOT_DOT_HASH;
+			return RPDFS_DIRENT_DOT_DOT_HASH;
 	}
 
-	hash = xxh64(name, name_len, NGNFS_DIRENT_HASH_SEED) & NGNFS_DIRENT_HASH_MASK;
+	hash = xxh64(name, name_len, RPDFS_DIRENT_HASH_SEED) & RPDFS_DIRENT_HASH_MASK;
 
-	if (hash < NGNFS_DIRENT_MIN_HASH)
-		hash = NGNFS_DIRENT_MIN_HASH;
+	if (hash < RPDFS_DIRENT_MIN_HASH)
+		hash = RPDFS_DIRENT_MIN_HASH;
 
 	return hash;
 }
@@ -79,33 +79,33 @@ struct dirent_args {
 	u64 hash;
 	size_t dent_size;
 	bool found;
-	struct ngnfs_dirent target;
+	struct rpdfs_dirent target;
 
-	struct ngnfs_dirent dent;
-	u8 __max_name_storage[NGNFS_NAME_MAX - sizeof_field(struct ngnfs_dirent, name)];
+	struct rpdfs_dirent dent;
+	u8 __max_name_storage[RPDFS_NAME_MAX - sizeof_field(struct rpdfs_dirent, name)];
 };
 
-static void init_dirent_key(struct ngnfs_btree_key *key, u64 hash)
+static void init_dirent_key(struct rpdfs_btree_key *key, u64 hash)
 {
-	*key = (struct ngnfs_btree_key) {
+	*key = (struct rpdfs_btree_key) {
 		.k[0] = cpu_to_le64(hash),
 	};
 }
 
 /*
- * Convert a POSIX file mode to an ngnfs persistent dirent type.
+ * Convert a POSIX file mode to an rpdfs persistent dirent type.
  */
-static enum ngnfs_dentry_type mode_to_pers_type(umode_t mode)
+static enum rpdfs_dentry_type mode_to_pers_type(umode_t mode)
 {
 #define S_SHIFT 12
 	static unsigned char mode_types[S_IFMT >> S_SHIFT] = {
-		[S_IFIFO >> S_SHIFT]	= NGNFS_DT_FIFO,
-		[S_IFCHR >> S_SHIFT]	= NGNFS_DT_CHR,
-		[S_IFDIR >> S_SHIFT]	= NGNFS_DT_DIR,
-		[S_IFBLK >> S_SHIFT]	= NGNFS_DT_BLK,
-		[S_IFREG >> S_SHIFT]	= NGNFS_DT_REG,
-		[S_IFLNK >> S_SHIFT]	= NGNFS_DT_LNK,
-		[S_IFSOCK >> S_SHIFT]	= NGNFS_DT_SOCK,
+		[S_IFIFO >> S_SHIFT]	= RPDFS_DT_FIFO,
+		[S_IFCHR >> S_SHIFT]	= RPDFS_DT_CHR,
+		[S_IFDIR >> S_SHIFT]	= RPDFS_DT_DIR,
+		[S_IFBLK >> S_SHIFT]	= RPDFS_DT_BLK,
+		[S_IFREG >> S_SHIFT]	= RPDFS_DT_REG,
+		[S_IFLNK >> S_SHIFT]	= RPDFS_DT_LNK,
+		[S_IFSOCK >> S_SHIFT]	= RPDFS_DT_SOCK,
 	};
 
 	return mode_types[(mode & S_IFMT) >> S_SHIFT];
@@ -113,19 +113,19 @@ static enum ngnfs_dentry_type mode_to_pers_type(umode_t mode)
 }
 
 /*
- * Convert the persistent ngnfs directory entry type to the POSIX ABI
+ * Convert the persistent rpdfs directory entry type to the POSIX ABI
  * dtype.
  */
-static unsigned int pers_dtype_to_abi_dtype(enum ngnfs_dentry_type type)
+static unsigned int pers_dtype_to_abi_dtype(enum rpdfs_dentry_type type)
 {
 	static unsigned char types[] = {
-		[NGNFS_DT_FIFO]	= DT_FIFO,
-		[NGNFS_DT_CHR]	= DT_CHR,
-		[NGNFS_DT_DIR]	= DT_DIR,
-		[NGNFS_DT_BLK]	= DT_BLK,
-		[NGNFS_DT_REG]	= DT_REG,
-		[NGNFS_DT_LNK]	= DT_LNK,
-		[NGNFS_DT_SOCK]	= DT_SOCK,
+		[RPDFS_DT_FIFO]	= DT_FIFO,
+		[RPDFS_DT_CHR]	= DT_CHR,
+		[RPDFS_DT_DIR]	= DT_DIR,
+		[RPDFS_DT_BLK]	= DT_BLK,
+		[RPDFS_DT_REG]	= DT_REG,
+		[RPDFS_DT_LNK]	= DT_LNK,
+		[RPDFS_DT_SOCK]	= DT_SOCK,
 	};
 
 	if (type < ARRAY_SIZE(types))
@@ -140,7 +140,7 @@ static unsigned int pers_dtype_to_abi_dtype(enum ngnfs_dentry_type type)
 static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len, mode_t mode)
 {
 	da->hash = name_hash(name, name_len);
-	da->dent_size = offsetof(struct ngnfs_dirent, name) + name_len;
+	da->dent_size = offsetof(struct rpdfs_dirent, name) + name_len;
 
 	da->dent.pers_dtype = mode_to_pers_type(mode);
 	da->dent.name_len = name_len;
@@ -150,7 +150,7 @@ static void init_dirent_args(struct dirent_args *da, char *name, size_t name_len
 	BUILD_BUG_ON(offsetofend(struct dirent_args, dent.name) !=
 		     offsetof(struct dirent_args, __max_name_storage));
 	BUILD_BUG_ON((sizeof_field(struct dirent_args, dent.name) +
-		      sizeof_field(struct dirent_args, __max_name_storage)) != NGNFS_NAME_MAX);
+		      sizeof_field(struct dirent_args, __max_name_storage)) != RPDFS_NAME_MAX);
 }
 
 /*
@@ -170,7 +170,7 @@ static void reset_dirent_args(struct dirent_args *da)
  * altered in this function should be reset by the corresponding rest
  * function.
  */
-static int update_dirent_args(struct dirent_args *da, struct ngnfs_inode_ino_gen *ig)
+static int update_dirent_args(struct dirent_args *da, struct rpdfs_inode_ino_gen *ig)
 {
 	da->dent.ig.ino = cpu_to_le64(ig->ino);
 	da->dent.ig.gen = cpu_to_le64(ig->gen);
@@ -178,7 +178,7 @@ static int update_dirent_args(struct dirent_args *da, struct ngnfs_inode_ino_gen
 	return 0;
 }
 
-static inline int check_ifmt(struct ngnfs_inode *ninode, u32 ifmt, int err)
+static inline int check_ifmt(struct rpdfs_inode *ninode, u32 ifmt, int err)
 {
 	/* XXX mixing persistent structures and stat abi constants? */
 
@@ -189,15 +189,15 @@ static inline int check_ifmt(struct ngnfs_inode *ninode, u32 ifmt, int err)
  * Update a parent directory's inode to reflect creation or deletion of
  * an entry. May fail if the resulting nlink is invalid.
  */
-static int update_dir(struct ngnfs_txn_block *tblk, struct ngnfs_inode *dir,
-		      struct ngnfs_dirent *dent, s32 nlink_delta)
+static int update_dir(struct rpdfs_txn_block *tblk, struct rpdfs_inode *dir,
+		      struct rpdfs_dirent *dent, s32 nlink_delta)
 {
 	s32 dent_bytes;
 	s32 posneg;
 	int ret;
 
-	if (dent->pers_dtype == NGNFS_DT_DIR) {
-		ret = ngnfs_inode_update(tblk, dir, nlink_delta);
+	if (dent->pers_dtype == RPDFS_DT_DIR) {
+		ret = rpdfs_inode_update(tblk, dir, nlink_delta);
 		if (ret < 0)
 			goto out;
 	}
@@ -205,7 +205,7 @@ static int update_dir(struct ngnfs_txn_block *tblk, struct ngnfs_inode *dir,
 	posneg = nlink_delta >= 0 ? 1 : -1;
 	/* dir i_size includes null termed names */
 	dent_bytes = posneg * ((s32) dent->name_len + 1);
-	ngnfs_tblk_assign(tblk, dir->size, cpu_to_le64(le64_to_cpu(dir->size) + dent_bytes));
+	rpdfs_tblk_assign(tblk, dir->size, cpu_to_le64(le64_to_cpu(dir->size) + dent_bytes));
 	ret = 0;
 out:
 	return ret;
@@ -214,21 +214,21 @@ out:
 /*
  * Lookup an inode and update its link count.
  */
-static int update_inode_nlink(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			      struct ngnfs_ino_gen *ino_gen, s32 nlink_delta)
+static int update_inode_nlink(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			      struct rpdfs_ino_gen *ino_gen, s32 nlink_delta)
 {
-	struct ngnfs_inode_ino_gen ig;
-	struct ngnfs_inode_txn_ref ino;
+	struct rpdfs_inode_ino_gen ig;
+	struct rpdfs_inode_txn_ref ino;
 	int ret;
 
 	ig.ino = le64_to_cpu(ino_gen->ino);
 	ig.gen = le64_to_cpu(ino_gen->gen);
 
-	ret = ngnfs_inode_get(nfi, txn, NBF_WRITE, &ig, &ino);
+	ret = rpdfs_inode_get(nfi, txn, NBF_WRITE, &ig, &ino);
 	if (ret < 0)
 		goto out;
 
-	ret = ngnfs_inode_update(ino.tblk, ino.ninode, nlink_delta);
+	ret = rpdfs_inode_update(ino.tblk, ino.ninode, nlink_delta);
 out:
 	return ret;
 }
@@ -250,10 +250,10 @@ out:
  * collision returns spurious enospc, to keep this simple and avoid that
  * weird potential error case.
  */
-static int insert_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size, void *arg,
-			    struct ngnfs_btree_op *op)
+static int insert_dirent_wr(struct rpdfs_btree_key *key, void *val, size_t size, void *arg,
+			    struct rpdfs_btree_op *op)
 {
-	struct ngnfs_dirent *dent = val;
+	struct rpdfs_dirent *dent = val;
 	struct dirent_args *da = arg;
 
 	if (dent) {
@@ -261,10 +261,10 @@ static int insert_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size,
 			return -EEXIST;
 
 		if (da->hash == le64_to_cpu(key->k[0])) {
-			if (da->hash & NGNFS_DIRENT_COLL_BIT)
+			if (da->hash & RPDFS_DIRENT_COLL_BIT)
 				return -ENOSPC;
-			da->hash |= NGNFS_DIRENT_COLL_BIT;
-			return NGNFS_BTREE_ITER_CONTINUE;
+			da->hash |= RPDFS_DIRENT_COLL_BIT;
+			return RPDFS_BTREE_ITER_CONTINUE;
 		}
 	}
 
@@ -282,16 +282,16 @@ static int insert_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size,
  * insertion, or returns errors.  The iterator updates the hash value in
  * its dirent_args as it iterates past existing collision bits.
  */
-static int insert_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			 struct ngnfs_inode_txn_ref *dir, struct dirent_args *da)
+static int insert_dirent(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			 struct rpdfs_inode_txn_ref *dir, struct dirent_args *da)
 {
-	struct ngnfs_btree_key key;
-	struct ngnfs_btree_key last;
+	struct rpdfs_btree_key key;
+	struct rpdfs_btree_key last;
 
 	init_dirent_key(&key, da->hash);
-	init_dirent_key(&last, da->hash | NGNFS_DIRENT_COLL_BIT);
+	init_dirent_key(&last, da->hash | RPDFS_DIRENT_COLL_BIT);
 
-	return ngnfs_btree_write_iter(nfi, txn, dir->tblk, &dir->ninode->dirents, &key,
+	return rpdfs_btree_write_iter(nfi, txn, dir->tblk, &dir->ninode->dirents, &key,
 				      &last, insert_dirent_wr, da);
 }
 
@@ -301,7 +301,7 @@ static int insert_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *tx
  */
 static int check_create_dots(u64 hash, mode_t mode)
 {
-	if (hash >= NGNFS_DIRENT_MIN_HASH)
+	if (hash >= RPDFS_DIRENT_MIN_HASH)
 		return 0;
 
 	if (S_ISDIR(mode))
@@ -313,22 +313,22 @@ static int check_create_dots(u64 hash, mode_t mode)
 /*
  * Allocate a new inode and add a directory entry referencing it.
  */
-static int do_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
+static int do_create(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *dir, umode_t mode,
 		     char *name, size_t name_len)
 {
 	struct {
-		struct ngnfs_transaction txn;
-		struct ngnfs_inode_txn_ref dir;
-		struct ngnfs_inode_txn_ref inode;
-		struct ngnfs_inode_ino_gen parent_ig;
-		struct ngnfs_inode_ino_gen ig;
+		struct rpdfs_transaction txn;
+		struct rpdfs_inode_txn_ref dir;
+		struct rpdfs_inode_txn_ref inode;
+		struct rpdfs_inode_ino_gen parent_ig;
+		struct rpdfs_inode_ino_gen ig;
 		u64 nsec;
 		int nlink;
 		struct dirent_args da;
 	} *op;
 	int ret;
 
-	if (name_len > NGNFS_NAME_MAX) {
+	if (name_len > RPDFS_NAME_MAX) {
 		ret = -ENAMETOOLONG;
 		goto out;
 	}
@@ -348,61 +348,61 @@ static int do_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir,
 		op->parent_ig.gen = 0;
 	}
 
-	ngnfs_txn_init(&op->txn);
+	rpdfs_txn_init(&op->txn);
 	init_dirent_args(&op->da, name, name_len, mode);
 
 	do {
 		op->nsec = ktime_to_ns(ktime_get_real());
 		reset_dirent_args(&op->da);
 
-		ret = ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, dir, &op->dir)			?:
+		ret = rpdfs_inode_get(nfi, &op->txn, NBF_WRITE, dir, &op->dir)			?:
 		      check_ifmt(op->dir.ninode, S_IFDIR, -ENOTDIR)				?:
 		      check_create_dots(op->da.hash, mode)					?:
-		      ngnfs_inode_alloc(nfi, &op->txn, &op->ig, &op->inode)			?:
-		      ngnfs_inode_init(&op->inode, &op->ig, op->nlink, mode, op->nsec,
+		      rpdfs_inode_alloc(nfi, &op->txn, &op->ig, &op->inode)			?:
+		      rpdfs_inode_init(&op->inode, &op->ig, op->nlink, mode, op->nsec,
 				       &op->parent_ig)						?:
 		      update_dirent_args(&op->da, &op->ig)					?:
 		      insert_dirent(nfi, &op->txn, &op->dir, &op->da)				?:
 		      update_dir(op->dir.tblk, op->dir.ninode, &op->da.dent, 1);
 
-	} while (ngnfs_txn_retry(nfi, &op->txn, &ret));
+	} while (rpdfs_txn_retry(nfi, &op->txn, &ret));
 
-	ngnfs_txn_teardown(nfi, &op->txn);
+	rpdfs_txn_teardown(nfi, &op->txn);
 	kfree(op);
 out:
 	return ret;
 }
 
-int ngnfs_dir_create(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
+int rpdfs_dir_create(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *dir, umode_t mode,
 		     char *name, size_t name_len)
 {
 	return do_create(nfi, dir, mode | S_IFREG, name, name_len);
 }
 
-int ngnfs_dir_mkdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, umode_t mode,
+int rpdfs_dir_mkdir(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *dir, umode_t mode,
 		    char *name, size_t name_len)
 {
 	return do_create(nfi, dir, mode | S_IFDIR, name, name_len);
 }
 
 struct readdir_args {
-	struct ngnfs_readdir_entry *ent;
+	struct rpdfs_readdir_entry *ent;
 	size_t size;
 	int nr;
 };
 
-static int fill_readdir_rd(struct ngnfs_btree_key *key, void *val, size_t val_size, void *args)
+static int fill_readdir_rd(struct rpdfs_btree_key *key, void *val, size_t val_size, void *args)
 {
 	struct readdir_args *ra = args;
-	struct ngnfs_dirent *dent = val;
+	struct rpdfs_dirent *dent = val;
 	size_t aligned;
 	size_t bytes;
 
-	bytes = offsetof(struct ngnfs_readdir_entry, name[dent->name_len + 1]);
+	bytes = offsetof(struct rpdfs_readdir_entry, name[dent->name_len + 1]);
 	if (bytes > ra->size)
 		return 0;
 
-	aligned = ALIGN(bytes, __alignof__(struct ngnfs_readdir_entry));
+	aligned = ALIGN(bytes, __alignof__(struct rpdfs_readdir_entry));
 
 	ra->ent->pos = le64_to_cpu(key->k[0]);
 	ra->ent->ig.ino = le64_to_cpu(dent->ig.ino);
@@ -421,44 +421,44 @@ static int fill_readdir_rd(struct ngnfs_btree_key *key, void *val, size_t val_si
 	ra->ent = (void *)ra->ent + aligned;
 	ra->size -= aligned;
 
-	return NGNFS_BTREE_ITER_CONTINUE;
+	return RPDFS_BTREE_ITER_CONTINUE;
 }
 
-static int dots_and_dents_read_iter(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-				    struct ngnfs_btree_root *root, struct ngnfs_inode_txn_ref *dir,
-				    struct ngnfs_btree_key *key, struct ngnfs_btree_key *next,
-				    struct ngnfs_btree_key *last,  ngnfs_btree_read_iter_fn_t iter,
+static int dots_and_dents_read_iter(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+				    struct rpdfs_btree_root *root, struct rpdfs_inode_txn_ref *dir,
+				    struct rpdfs_btree_key *key, struct rpdfs_btree_key *next,
+				    struct rpdfs_btree_key *last,  rpdfs_btree_read_iter_fn_t iter,
 				    void *iter_arg)
 {
-	struct ngnfs_dirent dots;
-	struct ngnfs_btree_key tmp_key = *key;
+	struct rpdfs_dirent dots;
+	struct rpdfs_btree_key tmp_key = *key;
 	u64 pos = le64_to_cpu(tmp_key.k[0]);
 	int ret;
 
-	while (pos <= NGNFS_DIRENT_DOT_DOT_HASH) {
+	while (pos <= RPDFS_DIRENT_DOT_DOT_HASH) {
 		if (last && pos > le64_to_cpu(last->k[0]))
 			break;
 
-		dots = (struct ngnfs_dirent) {
-			.pers_dtype = NGNFS_DT_DIR,
-			.name_len = pos == NGNFS_DIRENT_DOT_HASH ? 1 : 2,
-			.ig = pos == NGNFS_DIRENT_DOT_HASH ?
+		dots = (struct rpdfs_dirent) {
+			.pers_dtype = RPDFS_DT_DIR,
+			.name_len = pos == RPDFS_DIRENT_DOT_HASH ? 1 : 2,
+			.ig = pos == RPDFS_DIRENT_DOT_HASH ?
 			dir->ninode->ig : dir->ninode->parent_ig,
 			.name[0] = '.',
 			.name[1] = '.',
 		};
 
-		ret = iter(&tmp_key, &dots, offsetof(struct ngnfs_dirent, name[dots.name_len]),
+		ret = iter(&tmp_key, &dots, offsetof(struct rpdfs_dirent, name[dots.name_len]),
 			   iter_arg);
 
-		if (ret != NGNFS_BTREE_ITER_CONTINUE)
+		if (ret != RPDFS_BTREE_ITER_CONTINUE)
 			goto out;
 
 		pos++;
 		tmp_key.k[0] = cpu_to_le64(pos);
 	}
 
-	ret = ngnfs_btree_read_iter(nfi, txn, root, &tmp_key, next, last, iter, iter_arg);
+	ret = rpdfs_btree_read_iter(nfi, txn, root, &tmp_key, next, last, iter, iter_arg);
 out:
 	return ret;
 }
@@ -468,7 +468,7 @@ out:
  * entries in the buffer until entries are exhausted or the buffer is
  * full.  Returns the number of entries filled in the buffer.  There can
  * be padding between the end of one entry and the start of the next so
- * ngnfs_readdir_next_dirent(dent) must be used to iterate and it
+ * rpdfs_readdir_next_dirent(dent) must be used to iterate and it
  * shouldn't be used on the last filled entry.
  *
  * This only uses one call to the btree read iter so we don't have to
@@ -481,21 +481,21 @@ out:
  * the last entry so that the caller doesn't have to discover eof with a
  * final call that returns nothing.)
  */
-int ngnfs_dir_readdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_ig, u64 pos,
-		      struct ngnfs_readdir_entry *buf, size_t size)
+int rpdfs_dir_readdir(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *dir_ig, u64 pos,
+		      struct rpdfs_readdir_entry *buf, size_t size)
 {
-	struct ngnfs_inode_txn_ref dir;
-	struct ngnfs_transaction txn;
-	struct ngnfs_btree_key key;
+	struct rpdfs_inode_txn_ref dir;
+	struct rpdfs_transaction txn;
+	struct rpdfs_btree_key key;
 	struct readdir_args ra;
 	int ret;
 
-	if (size < NGNFS_READDIR_MIN_BUF_SIZE) {
+	if (size < RPDFS_READDIR_MIN_BUF_SIZE) {
 		ret = -ENOBUFS;
 		goto out;
 	}
 
-	ngnfs_txn_init(&txn);
+	rpdfs_txn_init(&txn);
 	init_dirent_key(&key, pos);
 
 	do {
@@ -503,25 +503,25 @@ int ngnfs_dir_readdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir
 		ra.size = size;
 		ra.nr = 0;
 
-		ret = ngnfs_inode_get(nfi, &txn, NBF_READ, dir_ig, &dir)			?:
+		ret = rpdfs_inode_get(nfi, &txn, NBF_READ, dir_ig, &dir)			?:
 		      check_ifmt(dir.ninode, S_IFDIR, -ENOTDIR)					?:
 		      dots_and_dents_read_iter(nfi, &txn, &dir.ninode->dirents, &dir, &key,
 					       NULL, NULL, fill_readdir_rd, &ra);
 
-	} while (ngnfs_txn_retry(nfi, &txn, &ret));
+	} while (rpdfs_txn_retry(nfi, &txn, &ret));
 
-	ngnfs_txn_teardown(nfi, &txn);
+	rpdfs_txn_teardown(nfi, &txn);
 out:
 	return ret ?: ra.nr;
 }
 
-static int fill_lookup_rd(struct ngnfs_btree_key *key, void *val, size_t val_size, void *arg)
+static int fill_lookup_rd(struct rpdfs_btree_key *key, void *val, size_t val_size, void *arg)
 {
 	struct dirent_args *da = arg;
-	struct ngnfs_dirent *dent = val;
+	struct rpdfs_dirent *dent = val;
 
 	if (!names_equal(dent->name, dent->name_len, (u8 *) da->dent.name, da->dent.name_len))
-		return NGNFS_BTREE_ITER_CONTINUE;
+		return RPDFS_BTREE_ITER_CONTINUE;
 
 	da->found = 1;
 	memcpy(&da->dent, dent, val_size);
@@ -529,15 +529,15 @@ static int fill_lookup_rd(struct ngnfs_btree_key *key, void *val, size_t val_siz
 	return 0;
 }
 
-static int lookup_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			 struct ngnfs_inode_txn_ref *dir, struct dirent_args *da)
+static int lookup_dirent(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			 struct rpdfs_inode_txn_ref *dir, struct dirent_args *da)
 {
-	struct ngnfs_btree_key key;
-	struct ngnfs_btree_key last;
+	struct rpdfs_btree_key key;
+	struct rpdfs_btree_key last;
 	int ret;
 
 	init_dirent_key(&key, da->hash);
-	init_dirent_key(&last, da->hash | NGNFS_DIRENT_COLL_BIT);
+	init_dirent_key(&last, da->hash | RPDFS_DIRENT_COLL_BIT);
 
 	ret = dots_and_dents_read_iter(nfi, txn, &dir->ninode->dirents, dir, &key, NULL, &last,
 				       fill_lookup_rd, da);
@@ -550,7 +550,7 @@ out:
 	return ret;
 }
 
-static int copy_dent_to_lent(struct ngnfs_dirent *dent, struct ngnfs_dir_lookup_entry *lent)
+static int copy_dent_to_lent(struct rpdfs_dirent *dent, struct rpdfs_dir_lookup_entry *lent)
 {
 	lent->ig.ino = le64_to_cpu(dent->ig.ino);
 	lent->ig.gen = le64_to_cpu(dent->ig.gen);
@@ -559,17 +559,17 @@ static int copy_dent_to_lent(struct ngnfs_dirent *dent, struct ngnfs_dir_lookup_
 	return 0;
 }
 
-int ngnfs_dir_lookup(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_ig, char *name,
-		     size_t name_len, struct ngnfs_dir_lookup_entry *lent)
+int rpdfs_dir_lookup(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *dir_ig, char *name,
+		     size_t name_len, struct rpdfs_dir_lookup_entry *lent)
 {
 	struct {
-		struct ngnfs_transaction txn;
-		struct ngnfs_inode_txn_ref dir;
+		struct rpdfs_transaction txn;
+		struct rpdfs_inode_txn_ref dir;
 		struct dirent_args da;
 	} *op;
 	int ret;
 
-	if (name_len > NGNFS_NAME_MAX) {
+	if (name_len > RPDFS_NAME_MAX) {
 		ret = -ENAMETOOLONG;
 		goto out;
 	}
@@ -580,19 +580,19 @@ int ngnfs_dir_lookup(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_
 		goto out;
 	}
 
-	ngnfs_txn_init(&op->txn);
+	rpdfs_txn_init(&op->txn);
 	init_dirent_args(&op->da, name, name_len, 0);
 
 	do {
 		reset_dirent_args(&op->da);
 
-		ret = ngnfs_inode_get(nfi, &op->txn, NBF_READ, dir_ig, &op->dir)		?:
+		ret = rpdfs_inode_get(nfi, &op->txn, NBF_READ, dir_ig, &op->dir)		?:
 		      check_ifmt(op->dir.ninode, S_IFDIR, -ENOTDIR)				?:
 		      lookup_dirent(nfi, &op->txn, &op->dir, &op->da);
 
-	} while (ngnfs_txn_retry(nfi, &op->txn, &ret));
+	} while (rpdfs_txn_retry(nfi, &op->txn, &ret));
 
-	ngnfs_txn_teardown(nfi, &op->txn);
+	rpdfs_txn_teardown(nfi, &op->txn);
 
 	if (ret == 0)
 		copy_dent_to_lent(&op->da.dent, lent);
@@ -602,17 +602,17 @@ out:
 	return ret;
 }
 
-static int remove_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size, void *arg,
-			    struct ngnfs_btree_op *op)
+static int remove_dirent_wr(struct rpdfs_btree_key *key, void *val, size_t size, void *arg,
+			    struct rpdfs_btree_op *op)
 {
-	struct ngnfs_dirent *dent = val;
+	struct rpdfs_dirent *dent = val;
 	struct dirent_args *da = arg;
 
 	if (!dent)
 		return -ENOENT;
 
 	if (!names_equal(dent->name, dent->name_len, da->dent.name, da->dent.name_len))
-		return NGNFS_BTREE_ITER_CONTINUE;
+		return RPDFS_BTREE_ITER_CONTINUE;
 
 	da->found = 1;
 	memcpy(&da->dent, dent, size);
@@ -622,17 +622,17 @@ static int remove_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size,
 	return 0;
 }
 
-static int remove_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			 struct ngnfs_inode_txn_ref *dir, struct dirent_args *da)
+static int remove_dirent(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			 struct rpdfs_inode_txn_ref *dir, struct dirent_args *da)
 {
-	struct ngnfs_btree_key key;
-	struct ngnfs_btree_key last;
+	struct rpdfs_btree_key key;
+	struct rpdfs_btree_key last;
 	int ret;
 
 	init_dirent_key(&key, da->hash);
-	init_dirent_key(&last, da->hash | NGNFS_DIRENT_COLL_BIT);
+	init_dirent_key(&last, da->hash | RPDFS_DIRENT_COLL_BIT);
 
-	ret = ngnfs_btree_write_iter(nfi, txn, dir->tblk, &dir->ninode->dirents, &key, &last,
+	ret = rpdfs_btree_write_iter(nfi, txn, dir->tblk, &dir->ninode->dirents, &key, &last,
 				     remove_dirent_wr, da);
 	if (ret < 0)
 		goto out;
@@ -643,17 +643,17 @@ out:
 	return ret;
 }
 
-static int check_empty_dir(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			   struct ngnfs_ino_gen *ino_gen)
+static int check_empty_dir(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			   struct rpdfs_ino_gen *ino_gen)
 {
-	struct ngnfs_inode_txn_ref dir;
-	struct ngnfs_inode_ino_gen ig;
+	struct rpdfs_inode_txn_ref dir;
+	struct rpdfs_inode_ino_gen ig;
 	int ret;
 
 	ig.ino = le64_to_cpu(ino_gen->ino);
 	ig.gen = le64_to_cpu(ino_gen->gen);
 
-	ret = ngnfs_inode_get(nfi, txn, NBF_READ, &ig, &dir);
+	ret = rpdfs_inode_get(nfi, txn, NBF_READ, &ig, &dir);
 	if (ret < 0)
 		return ret;
 
@@ -663,21 +663,21 @@ static int check_empty_dir(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 	return 0;
 }
 
-static int check_remove_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			       struct ngnfs_inode_txn_ref *dir, struct dirent_args *da,
+static int check_remove_dirent(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			       struct rpdfs_inode_txn_ref *dir, struct dirent_args *da,
 			       int want_non_dir)
 {
 	int ret;
 
 	if (want_non_dir) {
-		if (da->dent.pers_dtype == NGNFS_DT_DIR)
+		if (da->dent.pers_dtype == RPDFS_DT_DIR)
 			ret = -EISDIR;
 		else
 			ret = 0;
 		goto out;
 	}
 
-	if (da->dent.pers_dtype != NGNFS_DT_DIR) {
+	if (da->dent.pers_dtype != RPDFS_DT_DIR) {
 		ret = -ENOTDIR;
 		goto out;
 	}
@@ -687,20 +687,20 @@ out:
 	return ret;
 }
 
-static int do_unlink(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_ig, char *name,
+static int do_unlink(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *dir_ig, char *name,
 		     size_t name_len, int want_non_dir)
 {
 	struct {
-		struct ngnfs_transaction txn;
-		struct ngnfs_inode_txn_ref dir;
-		struct ngnfs_inode_ino_gen ig;
+		struct rpdfs_transaction txn;
+		struct rpdfs_inode_txn_ref dir;
+		struct rpdfs_inode_ino_gen ig;
 		u64 nsec;
 		u64 ino;
 		struct dirent_args da;
 	} *op;
 	int ret;
 
-	if (name_len > NGNFS_NAME_MAX) {
+	if (name_len > RPDFS_NAME_MAX) {
 		ret = -ENAMETOOLONG;
 		goto out;
 	}
@@ -711,36 +711,36 @@ static int do_unlink(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir_
 		goto out;
 	}
 
-	ngnfs_txn_init(&op->txn);
+	rpdfs_txn_init(&op->txn);
 	init_dirent_args(&op->da, name, name_len, 0);
 
 	do {
 		op->nsec = ktime_to_ns(ktime_get_real());
 		reset_dirent_args(&op->da);
 
-		ret = ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, dir_ig, &op->dir)		?:
+		ret = rpdfs_inode_get(nfi, &op->txn, NBF_WRITE, dir_ig, &op->dir)		?:
 		      check_ifmt(op->dir.ninode, S_IFDIR, -ENOTDIR)				?:
 		      remove_dirent(nfi, &op->txn, &op->dir, &op->da)				?:
 		      check_remove_dirent(nfi, &op->txn, &op->dir, &op->da, want_non_dir)	?:
 		      update_dir(op->dir.tblk, op->dir.ninode, &op->da.dent, -1)		?:
 		      update_inode_nlink(nfi, &op->txn, &op->da.dent.ig, -1);
 
-	} while (ngnfs_txn_retry(nfi, &op->txn, &ret));
+	} while (rpdfs_txn_retry(nfi, &op->txn, &ret));
 
-	ngnfs_txn_teardown(nfi, &op->txn);
+	rpdfs_txn_teardown(nfi, &op->txn);
 
 	kfree(op);
 out:
 	return ret;
 }
 
-int ngnfs_dir_unlink(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, char *name,
+int rpdfs_dir_unlink(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *dir, char *name,
 		     size_t name_len)
 {
 	return do_unlink(nfi, dir, name, name_len, 1);
 }
 
-int ngnfs_dir_rmdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, char *name,
+int rpdfs_dir_rmdir(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *dir, char *name,
 		    size_t name_len)
 {
 	return do_unlink(nfi, dir, name, name_len, 0);
@@ -754,12 +754,12 @@ int ngnfs_dir_rmdir(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *dir, 
  * function, src_da is a directory, and if a target exists, it is an
  * empty directory.
  */
-static int check_ancestors(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			   struct ngnfs_inode_txn_ref *src_dir, struct dirent_args *src_da,
-			   struct ngnfs_inode_txn_ref *dst_dir)
+static int check_ancestors(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			   struct rpdfs_inode_txn_ref *src_dir, struct dirent_args *src_da,
+			   struct rpdfs_inode_txn_ref *dst_dir)
 {
-	struct ngnfs_inode_txn_ref walk;
-	struct ngnfs_inode_ino_gen ig;
+	struct rpdfs_inode_txn_ref walk;
+	struct rpdfs_inode_ino_gen ig;
 	int ret;
 
 	/* common case: parent dirs the same, therefore no loop */
@@ -768,7 +768,7 @@ static int check_ancestors(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 		return 0;
 
 	/* the root inode can never be renamed */
-	if (le64_to_cpu(src_da->dent.ig.ino) == NGNFS_ROOT_INO)
+	if (le64_to_cpu(src_da->dent.ig.ino) == RPDFS_ROOT_INO)
 		return -ELOOP;
 
 	/* walk up from dst_dir, looking for src_da */
@@ -776,7 +776,7 @@ static int check_ancestors(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 	ig.ino = le64_to_cpu(walk.ninode->ig.ino);
 	ig.gen = le64_to_cpu(walk.ninode->ig.gen);
 
-	while (ig.ino != NGNFS_ROOT_INO) {
+	while (ig.ino != RPDFS_ROOT_INO) {
 		if (igs_equal(&ig, &src_da->dent.ig)) {
 			ret = -ELOOP;
 			goto out;
@@ -785,7 +785,7 @@ static int check_ancestors(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *
 		ig.ino = le64_to_cpu(walk.ninode->parent_ig.ino);
 		ig.gen = le64_to_cpu(walk.ninode->parent_ig.gen);
 
-		ret = ngnfs_inode_get(nfi, txn, NBF_READ, &ig, &walk);
+		ret = rpdfs_inode_get(nfi, txn, NBF_READ, &ig, &walk);
 		if (ret < 0)
 			goto out;
 	}
@@ -800,20 +800,20 @@ out:
  * saving it in the target field of dirent_args. Checks for whether
  * replacing the target dirent is allowed are done after this.
  */
-static int replace_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size, void *arg,
-			     struct ngnfs_btree_op *op)
+static int replace_dirent_wr(struct rpdfs_btree_key *key, void *val, size_t size, void *arg,
+			     struct rpdfs_btree_op *op)
 {
-	struct ngnfs_dirent *dent = val;
+	struct rpdfs_dirent *dent = val;
 	struct dirent_args *da = arg;
 
 	if (dent) {
 		/* check for colliding hash, if so, retry one more time */
 		if (!names_equal(dent->name, dent->name_len, da->dent.name, da->dent.name_len)) {
 			if (da->hash == le64_to_cpu(key->k[0])) {
-				if (da->hash & NGNFS_DIRENT_COLL_BIT)
+				if (da->hash & RPDFS_DIRENT_COLL_BIT)
 					return -ENOSPC;
-				da->hash |= NGNFS_DIRENT_COLL_BIT;
-				return NGNFS_BTREE_ITER_CONTINUE;
+				da->hash |= RPDFS_DIRENT_COLL_BIT;
+				return RPDFS_BTREE_ITER_CONTINUE;
 			}
 		}
 
@@ -833,20 +833,20 @@ static int replace_dirent_wr(struct ngnfs_btree_key *key, void *val, size_t size
 	return 0;
 }
 
-static int replace_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			  struct dirent_args *src_da, struct ngnfs_inode_txn_ref *dir,
+static int replace_dirent(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			  struct dirent_args *src_da, struct rpdfs_inode_txn_ref *dir,
 			  struct dirent_args *dst_da)
 {
-	struct ngnfs_btree_key key;
-	struct ngnfs_btree_key last;
+	struct rpdfs_btree_key key;
+	struct rpdfs_btree_key last;
 
 	init_dirent_key(&key, dst_da->hash);
-	init_dirent_key(&last, dst_da->hash | NGNFS_DIRENT_COLL_BIT);
+	init_dirent_key(&last, dst_da->hash | RPDFS_DIRENT_COLL_BIT);
 
 	dst_da->dent.ig = src_da->dent.ig;
 	dst_da->dent.pers_dtype = src_da->dent.pers_dtype;
 
-	return ngnfs_btree_write_iter(nfi, txn, dir->tblk, &dir->ninode->dirents, &key, &last,
+	return rpdfs_btree_write_iter(nfi, txn, dir->tblk, &dir->ninode->dirents, &key, &last,
 				      replace_dirent_wr, dst_da);
 }
 
@@ -855,9 +855,9 @@ static int replace_dirent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *t
  * problems that can't be caught during the individual dirent
  * remove/insert/replace operations.
  */
-static int check_rename(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			struct ngnfs_inode_txn_ref *src_dir, struct dirent_args *src_da,
-			struct ngnfs_inode_txn_ref *dst_dir, struct dirent_args *dst_da)
+static int check_rename(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			struct rpdfs_inode_txn_ref *src_dir, struct dirent_args *src_da,
+			struct rpdfs_inode_txn_ref *dst_dir, struct dirent_args *dst_da)
 {
 	int ret;
 
@@ -873,8 +873,8 @@ static int check_rename(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn
 	 * If source is a non-directory, the only possible problem is if
 	 * there is a target and it is a directory.
 	 */
-	if (src_da->dent.pers_dtype != NGNFS_DT_DIR) {
-		if (dst_da->found && dst_da->target.pers_dtype == NGNFS_DT_DIR)
+	if (src_da->dent.pers_dtype != RPDFS_DT_DIR) {
+		if (dst_da->found && dst_da->target.pers_dtype == RPDFS_DT_DIR)
 			ret = -EISDIR;
 		else
 			ret = 0;
@@ -887,7 +887,7 @@ static int check_rename(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn
 	 * empty, also fail.
 	 */
 	if (dst_da->found) {
-		if (dst_da->target.pers_dtype != NGNFS_DT_DIR) {
+		if (dst_da->target.pers_dtype != RPDFS_DT_DIR) {
 			ret = -ENOTDIR;
 			goto out;
 		}
@@ -907,9 +907,9 @@ out:
  * Update the size and nlink of the source and destination directories
  * of a rename.
  */
-static int rename_update_inodes(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-				struct ngnfs_inode_txn_ref *src_dir, struct dirent_args *src_da,
-				struct ngnfs_inode_txn_ref *dst_dir, struct dirent_args *dst_da)
+static int rename_update_inodes(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+				struct rpdfs_inode_txn_ref *src_dir, struct dirent_args *src_da,
+				struct rpdfs_inode_txn_ref *dst_dir, struct dirent_args *dst_da)
 {
 	int ret;
 
@@ -934,18 +934,18 @@ out:
 	return ret;
 }
 
-int ngnfs_dir_rename(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *src_dir_ig,
-		     char *src_name, size_t src_name_len, struct ngnfs_inode_ino_gen *dst_dir_ig,
+int rpdfs_dir_rename(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *src_dir_ig,
+		     char *src_name, size_t src_name_len, struct rpdfs_inode_ino_gen *dst_dir_ig,
 		     char *dst_name, size_t dst_name_len)
 {
 	struct {
-		struct ngnfs_inode_txn_ref src_dir, dst_dir;
-		struct ngnfs_transaction txn;
+		struct rpdfs_inode_txn_ref src_dir, dst_dir;
+		struct rpdfs_transaction txn;
 		struct dirent_args src_da, dst_da;
 	} *op;
 	int ret;
 
-	if ((src_name_len > NGNFS_NAME_MAX) || (dst_name_len > NGNFS_NAME_MAX)) {
+	if ((src_name_len > RPDFS_NAME_MAX) || (dst_name_len > RPDFS_NAME_MAX)) {
 		ret = -ENAMETOOLONG;
 		goto out;
 	}
@@ -956,7 +956,7 @@ int ngnfs_dir_rename(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *src_
 		goto out;
 	}
 
-	ngnfs_txn_init(&op->txn);
+	rpdfs_txn_init(&op->txn);
 	init_dirent_args(&op->src_da, src_name, src_name_len, 0);
 	init_dirent_args(&op->dst_da, dst_name, dst_name_len, 0);
 
@@ -964,10 +964,10 @@ int ngnfs_dir_rename(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *src_
 		reset_dirent_args(&op->src_da);
 		reset_dirent_args(&op->dst_da);
 
-		ret = ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, src_dir_ig, &op->src_dir)	?:
+		ret = rpdfs_inode_get(nfi, &op->txn, NBF_WRITE, src_dir_ig, &op->src_dir)	?:
 		      check_ifmt(op->src_dir.ninode, S_IFDIR, -ENOTDIR)				?:
 		      remove_dirent(nfi, &op->txn, &op->src_dir, &op->src_da)			?:
-		      ngnfs_inode_get(nfi, &op->txn, NBF_WRITE, dst_dir_ig, &op->dst_dir)	?:
+		      rpdfs_inode_get(nfi, &op->txn, NBF_WRITE, dst_dir_ig, &op->dst_dir)	?:
 		      check_ifmt(op->dst_dir.ninode, S_IFDIR, -ENOTDIR)				?:
 		      replace_dirent(nfi, &op->txn, &op->src_da, &op->dst_dir, &op->dst_da)	?:
 		      check_rename(nfi, &op->txn, &op->src_dir, &op->src_da, &op->dst_dir,
@@ -975,9 +975,9 @@ int ngnfs_dir_rename(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *src_
 		      rename_update_inodes(nfi, &op->txn, &op->src_dir, &op->src_da,
 					   &op->dst_dir, &op->dst_da);
 
-	} while (ngnfs_txn_retry(nfi, &op->txn, &ret));
+	} while (rpdfs_txn_retry(nfi, &op->txn, &ret));
 
-	ngnfs_txn_teardown(nfi, &op->txn);
+	rpdfs_txn_teardown(nfi, &op->txn);
 
 	kfree(op);
 out:

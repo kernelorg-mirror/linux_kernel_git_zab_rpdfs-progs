@@ -29,7 +29,7 @@
 
 static int format_device_func(int argc, char **argv)
 {
-	struct ngnfs_dev_commit_block *cmt = NULL;
+	struct rpdfs_dev_commit_block *cmt = NULL;
 	char uuid_str[37];
 	uuid_t uuid;
 	u64 size;
@@ -68,7 +68,7 @@ static int format_device_func(int argc, char **argv)
 		goto out;
 	}
 
-	total = size / NGNFS_BLOCK_SIZE;
+	total = size / RPDFS_BLOCK_SIZE;
 	journal = total >> 10;
 	commit = journal >> 2;
 	journal -= commit;
@@ -78,19 +78,19 @@ static int format_device_func(int argc, char **argv)
 	do {
 		d = details;
 		s = summary;
-		details = DIV_ROUND_UP(store, NGNFS_DEV_DETAILS_PER_BLOCK);
-		summary = DIV_ROUND_UP(details, NGNFS_DEV_SUMMARIES_PER_BLOCK);
+		details = DIV_ROUND_UP(store, RPDFS_DEV_DETAILS_PER_BLOCK);
+		summary = DIV_ROUND_UP(details, RPDFS_DEV_SUMMARIES_PER_BLOCK);
 		store = total - commit - journal - summary - details;
 	} while (d != details || s != summary);
 
-	ret = devfd_write_zeros(fd, 0, (total - store) * NGNFS_BLOCK_SIZE);
+	ret = devfd_write_zeros(fd, 0, (total - store) * RPDFS_BLOCK_SIZE);
 	if (ret < 0) {
 		printf("zeroing metadata: '%s': "ENOF"\n", argv[1], ENOA(-ret));
 		goto out;
 	}
 
-	cmt = calloc(1, NGNFS_BLOCK_SIZE);
-	cmt->hdr.type = NGNFS_DEV_BLOCK_TYPE_COMMIT;
+	cmt = calloc(1, RPDFS_BLOCK_SIZE);
+	cmt->hdr.type = RPDFS_DEV_BLOCK_TYPE_COMMIT;
 	cmt->layout.commit_blocks = cpu_to_le64(commit);
 	cmt->layout.journal_blocks = cpu_to_le64(journal);
 	cmt->layout.summary_blocks = cpu_to_le64(summary);
@@ -99,15 +99,15 @@ static int format_device_func(int argc, char **argv)
 
 	uuid_generate_random(uuid);
 	uuid_unparse(uuid, uuid_str);
-	BUILD_BUG_ON(NGNFS_UUID_SIZE != sizeof(uuid_t));
-	memcpy(&cmt->hdr.dev_uuid, &uuid, NGNFS_UUID_SIZE);
+	BUILD_BUG_ON(RPDFS_UUID_SIZE != sizeof(uuid_t));
+	memcpy(&cmt->hdr.dev_uuid, &uuid, RPDFS_UUID_SIZE);
 
-	off = sizeof_field(struct ngnfs_dev_block_header, crc);
-	crc = crc64_nvme(0, (void *)cmt + off, NGNFS_BLOCK_SIZE - off);
+	off = sizeof_field(struct rpdfs_dev_block_header, crc);
+	crc = crc64_nvme(0, (void *)cmt + off, RPDFS_BLOCK_SIZE - off);
 	cmt->hdr.crc = cpu_to_le64(crc);
 
-	ret = pwrite(fd, cmt, NGNFS_BLOCK_SIZE, 0);
-	if (ret != NGNFS_BLOCK_SIZE) {
+	ret = pwrite(fd, cmt, RPDFS_BLOCK_SIZE, 0);
+	if (ret != RPDFS_BLOCK_SIZE) {
 		if (ret >= 0)
 			ret = -EIO;
 		else
@@ -123,7 +123,7 @@ static int format_device_func(int argc, char **argv)
 		goto out;
 	}
 
-	printf("Formatted ngnfs device:\n"
+	printf("Formatted rpdfs device:\n"
 	       "  uuid:                   %s\n"
 	       "  4KiB blocks:            %llu\n",
 		uuid_str,
@@ -141,7 +141,7 @@ out:
 static struct cli_command format_device_cmd = {
 	.func = format_device_func,
 	.name = "format-device",
-	.desc = "Write to device for identification by ngnfs, (destructive!)"
+	.desc = "Write to device for identification by rpdfs, (destructive!)"
 };
 
 CLI_REGISTER(format_device_cmd);

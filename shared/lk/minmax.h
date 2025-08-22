@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_LK_MINMAX_H
-#define NGNFS_SHARED_LK_MINMAX_H
+#ifndef RPDFS_SHARED_LK_MINMAX_H
+#define RPDFS_SHARED_LK_MINMAX_H
 
 #define min(a, b)		\
 ({				\

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_THREAD_H
-#define NGNFS_SHARED_THREAD_H
+#ifndef RPDFS_SHARED_THREAD_H
+#define RPDFS_SHARED_THREAD_H
 
 #include <stdbool.h>
 #include <pthread.h>

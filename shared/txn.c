@@ -12,11 +12,11 @@
 #include "shared/txn.h"
 #include "shared/unbuf.h"
 
-struct ngnfs_txn_block {
+struct rpdfs_txn_block {
 	struct rb_node node;
 	struct list_head write_head;
-	struct ngnfs_block *bl;
-	struct ngnfs_undo_buf *unbuf;
+	struct rpdfs_block *bl;
+	struct rpdfs_undo_buf *unbuf;
 	u64 bnr;
 	nbf_t requested_nbf;
 	nbf_t acquired_nbf;
@@ -28,9 +28,9 @@ struct rb_insert_args {
 	struct rb_node **link;
 };
 
-static struct ngnfs_txn_block *find_tblk(struct rb_root *root, u64 bnr, struct rb_insert_args *ins)
+static struct rpdfs_txn_block *find_tblk(struct rb_root *root, u64 bnr, struct rb_insert_args *ins)
 {
-	struct ngnfs_txn_block *tblk;
+	struct rpdfs_txn_block *tblk;
 	int cmp;
 
 	ins->parent = NULL;
@@ -38,9 +38,9 @@ static struct ngnfs_txn_block *find_tblk(struct rb_root *root, u64 bnr, struct r
 
 	while (*ins->link) {
 		ins->parent = *ins->link;
-		tblk = container_of(*ins->link, struct ngnfs_txn_block, node);
+		tblk = container_of(*ins->link, struct rpdfs_txn_block, node);
 
-		cmp = ngnfs_compare(bnr, tblk->bnr);
+		cmp = rpdfs_compare(bnr, tblk->bnr);
 		if (cmp == 0)
 			return tblk;
 
@@ -53,28 +53,28 @@ static struct ngnfs_txn_block *find_tblk(struct rb_root *root, u64 bnr, struct r
 	return NULL;
 }
 
-static struct ngnfs_txn_block *containing_tblk(struct rb_node *node)
+static struct rpdfs_txn_block *containing_tblk(struct rb_node *node)
 {
-	return node ? container_of(node, struct ngnfs_txn_block, node) : NULL;
+	return node ? container_of(node, struct rpdfs_txn_block, node) : NULL;
 }
 
-static struct ngnfs_txn_block *last_tblk(struct rb_root *root)
+static struct rpdfs_txn_block *last_tblk(struct rb_root *root)
 {
 	return containing_tblk(rb_last(root));
 }
 
-static struct ngnfs_txn_block *next_tblk(struct ngnfs_txn_block *tblk)
+static struct rpdfs_txn_block *next_tblk(struct rpdfs_txn_block *tblk)
 {
 	return containing_tblk(tblk ? rb_next(&tblk->node) : NULL);
 }
 
-static struct ngnfs_txn_block *prev_tblk(struct ngnfs_txn_block *tblk)
+static struct rpdfs_txn_block *prev_tblk(struct rpdfs_txn_block *tblk)
 {
 	return containing_tblk(tblk ? rb_prev(&tblk->node) : NULL);
 }
 
-static void put_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-		      struct ngnfs_txn_block *tblk, nbf_t nbf)
+static void put_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+		      struct rpdfs_txn_block *tblk, nbf_t nbf)
 {
 	nbf |= tblk->acquired_nbf;
 
@@ -84,16 +84,16 @@ static void put_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 	if (nbf & NBF_WRITE)
 		list_del_init(&tblk->write_head);
 
-	ngnfs_block_put(nfi, tblk->bl, nbf);
+	rpdfs_block_put(nfi, tblk->bl, nbf);
 
 	tblk->bl = NULL;
 	tblk->acquired_nbf = 0;
 }
 
-static int get_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-		     struct ngnfs_txn_block *tblk, nbf_t nbf)
+static int get_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+		     struct rpdfs_txn_block *tblk, nbf_t nbf)
 {
-	struct ngnfs_block *bl;
+	struct rpdfs_block *bl;
 	int ret;
 
 	/* we want to retry requested mode if it fails */
@@ -101,9 +101,9 @@ static int get_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 
 	/* always wait for dirty to fall under the limit before we start writing */
 	if ((nbf & NBF_WRITE) && list_empty(&txn->writes))
-		ngnfs_block_dirty_limit_wait(nfi);
+		rpdfs_block_dirty_limit_wait(nfi);
 
-	bl = ngnfs_block_get(nfi, tblk->bnr, nbf);
+	bl = rpdfs_block_get(nfi, tblk->bnr, nbf);
 	if (IS_ERR(bl)) {
 		ret = PTR_ERR(bl);
 		if (ret == -EDEADLK)
@@ -118,7 +118,7 @@ static int get_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 		list_add_tail(&tblk->write_head, &txn->writes);
 
 	if (!tblk->unbuf) {
-		ret = ngnfs_unbuf_alloc(ngnfs_block_buf(bl), NGNFS_BLOCK_SIZE, &tblk->unbuf);
+		ret = rpdfs_unbuf_alloc(rpdfs_block_buf(bl), RPDFS_BLOCK_SIZE, &tblk->unbuf);
 		if (ret < 0) {
 			put_block(nfi, txn, tblk, 0);
 			goto out;
@@ -153,10 +153,10 @@ static bool nbf_rw_compatible(nbf_t have, nbf_t want)
  * particular, renames across directories can read thousands of parent
  * dir blocks for particularly pathological dir trees.
  */
-int ngnfs_txn_get_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			u64 bnr, nbf_t nbf, struct ngnfs_txn_block **tblk_ret, void **data_ret)
+int rpdfs_txn_get_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			u64 bnr, nbf_t nbf, struct rpdfs_txn_block **tblk_ret, void **data_ret)
 {
-	struct ngnfs_txn_block *tblk;
+	struct rpdfs_txn_block *tblk;
 	struct rb_insert_args ins;
 	void *data;
 	int ret;
@@ -171,7 +171,7 @@ int ngnfs_txn_get_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn
 
 	tblk = find_tblk(&txn->blocks, bnr, &ins);
 	if (!tblk) {
-		tblk = kmalloc(sizeof(struct ngnfs_txn_block), GFP_NOFS);
+		tblk = kmalloc(sizeof(struct rpdfs_txn_block), GFP_NOFS);
 		if (!tblk) {
 			ret = -ENOMEM;
 			goto out;
@@ -211,7 +211,7 @@ out:
 		tblk = NULL;
 		data = NULL;
 	} else {
-		data = ngnfs_block_buf(tblk->bl);
+		data = rpdfs_block_buf(tblk->bl);
 	}
 
 	if (tblk_ret)
@@ -234,9 +234,9 @@ out:
  * global fake block number and will overwrite anything that was written
  * by previous mounts.
  */
-static atomic64_t global_fake_alloc = ATOMIC64_INIT(NGNFS_ROOT_INO + 1);
+static atomic64_t global_fake_alloc = ATOMIC64_INIT(RPDFS_ROOT_INO + 1);
 
-int ngnfs_txn_alloc_meta(struct ngnfs_transaction *txn, u64 *bnr_ret)
+int rpdfs_txn_alloc_meta(struct rpdfs_transaction *txn, u64 *bnr_ret)
 {
 	*bnr_ret = atomic64_inc_return(&global_fake_alloc);
 	return 0;
@@ -247,12 +247,12 @@ int ngnfs_txn_alloc_meta(struct ngnfs_transaction *txn, u64 *bnr_ret)
  * contents.  Use the block's undo buffer to save away the original
  * contents in case we need to restore it.
  */
-void ngnfs_txn_save(struct ngnfs_txn_block *tblk, void *ptr, size_t size)
+void rpdfs_txn_save(struct rpdfs_txn_block *tblk, void *ptr, size_t size)
 {
-	ngnfs_unbuf_save(tblk->unbuf, ptr, size);
+	rpdfs_unbuf_save(tblk->unbuf, ptr, size);
 }
 
-static void free_tblk(struct ngnfs_transaction *txn, struct ngnfs_txn_block *tblk, bool erase)
+static void free_tblk(struct rpdfs_transaction *txn, struct rpdfs_txn_block *tblk, bool erase)
 {
 	BUG_ON(tblk->acquired_nbf & (NBF_READ|NBF_WRITE));
 
@@ -260,7 +260,7 @@ static void free_tblk(struct ngnfs_transaction *txn, struct ngnfs_txn_block *tbl
 		rb_erase(&tblk->node, &txn->blocks);
 	if (!list_empty(&tblk->write_head))
 		list_del_init(&tblk->write_head);
-	ngnfs_unbuf_free(tblk->unbuf);
+	rpdfs_unbuf_free(tblk->unbuf);
 
 	kfree(tblk);
 }
@@ -281,9 +281,9 @@ static void free_tblk(struct ngnfs_transaction *txn, struct ngnfs_txn_block *tbl
  * (XXX we'll want to mark blocks that were not found by retries so we
  * can just drop them.)
  */
-bool ngnfs_txn_retry(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, int *ret)
+bool rpdfs_txn_retry(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn, int *ret)
 {
-	struct ngnfs_txn_block *tblk;
+	struct rpdfs_txn_block *tblk;
 	bool retry = false;
 
 	if (*ret >= 0)
@@ -291,7 +291,7 @@ bool ngnfs_txn_retry(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn, i
 
 	/* undo block modifications on error */
 	list_for_each_entry(tblk, &txn->writes, write_head)
-		ngnfs_unbuf_restore(tblk->unbuf);
+		rpdfs_unbuf_restore(tblk->unbuf);
 
 	if (*ret != -EDEADLK)
 		goto out;
@@ -324,10 +324,10 @@ out:
  * Free all the resources in the txn so that it is safe for the caller
  * to free the txn struct memory itself, or perhaps reuse it.
  */
-void ngnfs_txn_teardown(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn)
+void rpdfs_txn_teardown(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn)
 {
-	struct ngnfs_txn_block *tblk;
-	struct ngnfs_txn_block *tmp;
+	struct rpdfs_txn_block *tblk;
+	struct rpdfs_txn_block *tmp;
 
 	rbtree_postorder_for_each_entry_safe(tblk, tmp, &txn->blocks, node) {
 		put_block(nfi, txn, tblk, 0);

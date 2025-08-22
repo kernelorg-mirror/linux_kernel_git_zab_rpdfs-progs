@@ -42,7 +42,7 @@
  */
 static u64 dblk_from_offset(u64 offset)
 {
-	return offset >> NGNFS_BLOCK_SHIFT;
+	return offset >> RPDFS_BLOCK_SHIFT;
 }
 
 /*
@@ -50,7 +50,7 @@ static u64 dblk_from_offset(u64 offset)
  */
 static u64 offset_in_blk(u64 offset)
 {
-	return offset & NGNFS_BLOCK_MASK;
+	return offset & RPDFS_BLOCK_MASK;
 }
 
 /*
@@ -65,9 +65,9 @@ static u32 calc_ref_ind(u64 dblk, int level)
 	BUG_ON(level < 1);
 
 	for (i = 1; i < level; i++)
-		dblk >>= NGNFS_DATA_REFS_PER_BLK_SHIFT;
+		dblk >>= RPDFS_DATA_REFS_PER_BLK_SHIFT;
 
-	ind = dblk & (NGNFS_DATA_REFS_PER_BLK - 1ULL);
+	ind = dblk & (RPDFS_DATA_REFS_PER_BLK - 1ULL);
 
 	return ind;
 }
@@ -83,44 +83,44 @@ static u8 height_from_dblk(u64 dblk)
 	if (dblk == 0)
 		return 1;
 
-	while (dblk >>= NGNFS_DATA_REFS_PER_BLK_SHIFT)
+	while (dblk >>= RPDFS_DATA_REFS_PER_BLK_SHIFT)
 		height++;
 
 	return height;
 }
 
-static int alloc_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-		       struct ngnfs_txn_block *parent_tblk, struct ngnfs_block_ref *parent_ref,
-		       struct ngnfs_txn_block **tblk_ret, void **data_ret)
+static int alloc_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+		       struct rpdfs_txn_block *parent_tblk, struct rpdfs_block_ref *parent_ref,
+		       struct rpdfs_txn_block **tblk_ret, void **data_ret)
 {
-	struct ngnfs_block_ref ref;
+	struct rpdfs_block_ref ref;
 	u64 bnr;
 	int ret;
 
-	ret = ngnfs_txn_alloc_meta(txn, &bnr);
+	ret = rpdfs_txn_alloc_meta(txn, &bnr);
 	if (ret < 0)
 		goto out;
 
-	ret = ngnfs_txn_get_block(nfi, txn, bnr, NBF_WRITE | NBF_NEW, tblk_ret, data_ret);
+	ret = rpdfs_txn_get_block(nfi, txn, bnr, NBF_WRITE | NBF_NEW, tblk_ret, data_ret);
 	if (ret < 0)
 		goto out;
 
 	ref.bnr = cpu_to_le64(bnr);
 	ref.alloc_counter = 0; /* XXX */
-	ngnfs_tblk_assign(parent_tblk, *parent_ref, ref);
+	rpdfs_tblk_assign(parent_tblk, *parent_ref, ref);
 out:
 	return ret;
 }
 
-static int grow_height(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-		       struct ngnfs_inode_txn_ref *ino, int height)
+static int grow_height(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+		       struct rpdfs_inode_txn_ref *ino, int height)
 {
-	struct ngnfs_txn_block *parent_tblk;
-	struct ngnfs_block_ref *parent_ref;
-	struct ngnfs_indirect_block *iblk;
-	struct ngnfs_txn_block *tblk;
-	struct ngnfs_data_root *dr;
-	struct ngnfs_block_ref ref;
+	struct rpdfs_txn_block *parent_tblk;
+	struct rpdfs_block_ref *parent_ref;
+	struct rpdfs_indirect_block *iblk;
+	struct rpdfs_txn_block *tblk;
+	struct rpdfs_data_root *dr;
+	struct rpdfs_block_ref ref;
 	u8 level;
 	int ret;
 
@@ -146,8 +146,8 @@ static int grow_height(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
 		}
 
 		/* now put existing tree in indirect block */
-		ngnfs_tblk_assign(tblk, iblk->refs[0], ref);
-		ngnfs_tblk_assign(ino->tblk, dr->height, height);
+		rpdfs_tblk_assign(tblk, iblk->refs[0], ref);
+		rpdfs_tblk_assign(ino->tblk, dr->height, height);
 	}
 out:
 	return ret;
@@ -160,16 +160,16 @@ out:
  * file. If a read hits an unallocated range, this returns 0 for the
  * number of refs and the caller will zero fill the buffer.
  */
-static int get_data_block_parent(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-				 struct ngnfs_inode_txn_ref *ino, u64 offset, int write,
-				 struct ngnfs_txn_block **tblkp,
-				 struct ngnfs_block_ref **refs, int *nr)
+static int get_data_block_parent(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+				 struct rpdfs_inode_txn_ref *ino, u64 offset, int write,
+				 struct rpdfs_txn_block **tblkp,
+				 struct rpdfs_block_ref **refs, int *nr)
 {
-	struct ngnfs_txn_block *parent_tblk;
-	struct ngnfs_block_ref *parent_ref;
-	struct ngnfs_indirect_block *iblk;
-	struct ngnfs_txn_block *tblk;
-	struct ngnfs_data_root *dr;
+	struct rpdfs_txn_block *parent_tblk;
+	struct rpdfs_block_ref *parent_ref;
+	struct rpdfs_indirect_block *iblk;
+	struct rpdfs_txn_block *tblk;
+	struct rpdfs_data_root *dr;
 	u64 dblk;
 	u64 bnr;
 	u8 height;
@@ -188,7 +188,7 @@ static int get_data_block_parent(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 			ret = alloc_block(nfi, txn, ino->tblk, &dr->ref, NULL, NULL);
 			if (ret < 0)
 				goto out;
-			ngnfs_tblk_assign(ino->tblk, dr->height, height);
+			rpdfs_tblk_assign(ino->tblk, dr->height, height);
 		}
 
 		*tblkp = ino->tblk;
@@ -212,7 +212,7 @@ static int get_data_block_parent(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 	/* may still have totally empty tree */
 	while (level-- > 1) {
 		if (bnr) {
-			ret = ngnfs_txn_get_block(nfi, txn, bnr, NBF_READ, &tblk, (void **) &iblk);
+			ret = rpdfs_txn_get_block(nfi, txn, bnr, NBF_READ, &tblk, (void **) &iblk);
 			if (ret < 0)
 				goto out;
 
@@ -220,12 +220,12 @@ static int get_data_block_parent(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 			if (!write) {
 				*tblkp = NULL;
 				*refs = NULL;
-				*nr = NGNFS_DATA_REFS_PER_BLK - calc_ref_ind(dblk, 1);
+				*nr = RPDFS_DATA_REFS_PER_BLK - calc_ref_ind(dblk, 1);
 			}
 
 			/* get write access to update parent with new block */
 			if (parent_ref) {
-				ret = ngnfs_txn_get_block(nfi, txn, le64_to_cpu(parent_ref->bnr),
+				ret = rpdfs_txn_get_block(nfi, txn, le64_to_cpu(parent_ref->bnr),
 							  NBF_WRITE, NULL, NULL);
 				if (ret < 0)
 					goto out;
@@ -249,28 +249,28 @@ static int get_data_block_parent(struct ngnfs_fs_info *nfi, struct ngnfs_transac
 	};
 
 	if (dr->height < height)
-		ngnfs_tblk_assign(ino->tblk, dr->height, height);
+		rpdfs_tblk_assign(ino->tblk, dr->height, height);
 
 	*tblkp = tblk;
 	ind = calc_ref_ind(dblk, 1);
 	*refs = &iblk->refs[ind];
-	*nr = NGNFS_DATA_REFS_PER_BLK - ind;
+	*nr = RPDFS_DATA_REFS_PER_BLK - ind;
 out:
 	return ret;
 }
 
-static int read_write_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			    struct ngnfs_txn_block *parent_tblk,
-			    struct ngnfs_block_ref *parent_refs, int ind,
+static int read_write_block(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			    struct rpdfs_txn_block *parent_tblk,
+			    struct rpdfs_block_ref *parent_refs, int ind,
 			    int start, void *buf, int len, int write)
 {
-	struct ngnfs_txn_block *tblk;
+	struct rpdfs_txn_block *tblk;
 	char *data;
 	u64 bnr;
 	nbf_t nbf;
 	int ret;
 
-	BUG_ON(start + len > NGNFS_BLOCK_SIZE);
+	BUG_ON(start + len > RPDFS_BLOCK_SIZE);
 
 	if (parent_refs)
 		bnr = le64_to_cpu(parent_refs[ind].bnr);
@@ -286,7 +286,7 @@ static int read_write_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction 
 
 	if (bnr) {
 		nbf = write ? NBF_WRITE : NBF_READ;
-		ret = ngnfs_txn_get_block(nfi, txn, bnr, nbf, &tblk, (void **) &data);
+		ret = rpdfs_txn_get_block(nfi, txn, bnr, nbf, &tblk, (void **) &data);
 		if (ret < 0)
 			goto out;
 
@@ -297,7 +297,7 @@ static int read_write_block(struct ngnfs_fs_info *nfi, struct ngnfs_transaction 
 	}
 
 	if (write)
-		ngnfs_tblk_memcpy(tblk, data + start, buf, len);
+		rpdfs_tblk_memcpy(tblk, data + start, buf, len);
 	else
 		memcpy(buf, data + start, len);
 out:
@@ -310,7 +310,7 @@ out:
  * the range doesn't overlap any allocated part of the file, set len to
  * 0 and the caller will return no error.
  */
-static void trim_read_range(struct ngnfs_inode *ino, u64 offset, size_t *len)
+static void trim_read_range(struct rpdfs_inode *ino, u64 offset, size_t *len)
 {
 	u64 i_size;
 
@@ -326,18 +326,18 @@ static void trim_read_range(struct ngnfs_inode *ino, u64 offset, size_t *len)
  * If file size needs to be updated, then we already have write access
  * to the inode, so this currently can't fail.
  */
-static void update_isize(struct ngnfs_inode_txn_ref *itref, u64 size)
+static void update_isize(struct rpdfs_inode_txn_ref *itref, u64 size)
 {
 	if (size > le64_to_cpu(itref->ninode->size))
-		ngnfs_tblk_assign(itref->tblk, itref->ninode->size, cpu_to_le64(size));
+		rpdfs_tblk_assign(itref->tblk, itref->ninode->size, cpu_to_le64(size));
 }
 
-static int read_write_range(struct ngnfs_fs_info *nfi, struct ngnfs_transaction *txn,
-			    struct ngnfs_inode_txn_ref *itref, u64 offset, char *buf, size_t len,
+static int read_write_range(struct rpdfs_fs_info *nfi, struct rpdfs_transaction *txn,
+			    struct rpdfs_inode_txn_ref *itref, u64 offset, char *buf, size_t len,
 			    int write, size_t *bytes)
 {
-	struct ngnfs_txn_block *tblk;
-	struct ngnfs_block_ref *refs;
+	struct rpdfs_txn_block *tblk;
+	struct rpdfs_block_ref *refs;
 	size_t start, done, todo;
 	int nr;
 	int i;
@@ -356,8 +356,8 @@ static int read_write_range(struct ngnfs_fs_info *nfi, struct ngnfs_transaction 
 
 		for (i = 0; i < nr; i++) {
 			todo = len - done;
-			if (todo > (NGNFS_BLOCK_SIZE - start))
-				todo = NGNFS_BLOCK_SIZE - start;
+			if (todo > (RPDFS_BLOCK_SIZE - start))
+				todo = RPDFS_BLOCK_SIZE - start;
 
 			ret = read_write_block(nfi, txn, tblk, refs, i, start,
 					       buf + done, todo, write);
@@ -385,11 +385,11 @@ out:
 	return ret;
 }
 
-static ssize_t read_write_data(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig,
+static ssize_t read_write_data(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *ig,
 			       u64 offset, void *buf, size_t len, int write)
 {
-	struct ngnfs_transaction txn;
-	struct ngnfs_inode_txn_ref itref;
+	struct rpdfs_transaction txn;
+	struct rpdfs_inode_txn_ref itref;
 	size_t start, bytes, done, todo;
 	nbf_t nbf;
 	int ret;
@@ -398,24 +398,24 @@ static ssize_t read_write_data(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino
 	start = offset_in_blk(offset);
 	nbf = write ? NBF_WRITE : NBF_READ;
 
-	ngnfs_txn_init(&txn);
+	rpdfs_txn_init(&txn);
 
 	/* split into appropriate-sized transactions */
 	for (done = 0; done < len; done += bytes) {
 
 		do {
 			todo = len - done;
-			if (todo > (NGNFS_DATA_MAX_IO - start))
-				todo = NGNFS_DATA_MAX_IO - start;
+			if (todo > (RPDFS_DATA_MAX_IO - start))
+				todo = RPDFS_DATA_MAX_IO - start;
 
 			/* XXX need to prevent other IOs interleaving */
-			ret = ngnfs_inode_get(nfi, &txn, nbf, ig, &itref)			?:
+			ret = rpdfs_inode_get(nfi, &txn, nbf, ig, &itref)			?:
 			      read_write_range(nfi, &txn, &itref, offset, buf + done,
 					       todo, write, &bytes);
 
-		} while (ngnfs_txn_retry(nfi, &txn, &ret));
+		} while (rpdfs_txn_retry(nfi, &txn, &ret));
 
-		ngnfs_txn_teardown(nfi, &txn);
+		rpdfs_txn_teardown(nfi, &txn);
 
 		if (ret < 0)
 			goto out;
@@ -432,13 +432,13 @@ out:
 	return ret ?: done;
 }
 
-ssize_t ngnfs_data_write(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig,
+ssize_t rpdfs_data_write(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *ig,
 			 u64 offset, void *buf, size_t len)
 {
 	return read_write_data(nfi, ig, offset, buf, len, 1);
 }
 
-ssize_t ngnfs_data_read(struct ngnfs_fs_info *nfi, struct ngnfs_inode_ino_gen *ig,
+ssize_t rpdfs_data_read(struct rpdfs_fs_info *nfi, struct rpdfs_inode_ino_gen *ig,
 			u64 offset, void *buf, size_t len)
 {
 	return read_write_data(nfi, ig, offset, buf, len, 0);

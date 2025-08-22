@@ -102,8 +102,8 @@ struct block_work_list {
 	struct work_struct work;
 };
 
-struct ngnfs_block_info {
-	struct ngnfs_fs_info *nfi;
+struct rpdfs_block_info {
+	struct rpdfs_fs_info *nfi;
 	struct rhashtable ht;
 
 	int queue_depth;
@@ -141,7 +141,7 @@ struct ngnfs_block_info {
  * don't want the definitions to smash up against the margin so.. here
  * we are.
  */
-struct ngnfs_block_state {
+struct rpdfs_block_state {
 	union {
 		unsigned long _state;
 		struct {
@@ -238,9 +238,9 @@ struct ngnfs_block_state {
 	(st)->read_mode,		\
 	(st)->set_mode
 
-struct ngnfs_block {
+struct rpdfs_block {
 	atomic_t refcount;
-	struct ngnfs_block_state st;
+	struct rpdfs_block_state st;
 	struct rcu_head rcu;
 	struct rhash_head rhead;
 	struct llist_node dirty_llnode;
@@ -269,8 +269,8 @@ struct ngnfs_block {
  * st, the caller can modify st and old will be used to try apply the
  * changes in st with cmpxchg.
  */
-static void st_change_prepare(struct ngnfs_block *bl, struct ngnfs_block_state *old,
-			      struct ngnfs_block_state *st)
+static void st_change_prepare(struct rpdfs_block *bl, struct rpdfs_block_state *old,
+			      struct rpdfs_block_state *st)
 {
 	smp_rmb(); /* acquire */
 	*old = READ_ONCE(bl->st);
@@ -284,8 +284,8 @@ static void st_change_prepare(struct ngnfs_block *bl, struct ngnfs_block_state *
  * then old and new are both set to the current state and the caller can
  * attempt to change the state again.
  */
-static bool st_change_apply(struct ngnfs_block *bl, struct ngnfs_block_state *old,
-			    struct ngnfs_block_state *st)
+static bool st_change_apply(struct rpdfs_block *bl, struct rpdfs_block_state *old,
+			    struct rpdfs_block_state *st)
 {
 	unsigned long _state = cmpxchg(&bl->st._state, old->_state, st->_state);
 
@@ -327,15 +327,15 @@ static bool st_change_apply(struct ngnfs_block *bl, struct ngnfs_block_state *ol
  */
 #define st_change(BL_, ST_, EXPR_)				\
 ({								\
-	struct ngnfs_block_state old_;				\
+	struct rpdfs_block_state old_;				\
 								\
 	st_cond_change((BL_), &old_, (ST_), true, (EXPR_));	\
 })
 
 /* declaring these here so that we can have their wake condition along side their work */
-static void try_queue_flush_work(struct ngnfs_block_info *blinf);
-static void try_queue_submit_work(struct ngnfs_block_info *blinf);
-static void queue_clean_work(struct ngnfs_block_info *blinf);
+static void try_queue_flush_work(struct rpdfs_block_info *blinf);
+static void try_queue_submit_work(struct rpdfs_block_info *blinf);
+static void queue_clean_work(struct rpdfs_block_info *blinf);
 
 static void init_block_work_list(struct block_work_list *worklist, work_func_t func)
 {
@@ -351,7 +351,7 @@ static void destroy_block_work_list(struct block_work_list *worklist)
 		destroy_workqueue(worklist->wq);
 }
 
-static void free_block(struct ngnfs_block *bl)
+static void free_block(struct rpdfs_block *bl)
 {
 	if (!IS_ERR_OR_NULL(bl)) {
 		BUG_ON(waitqueue_active(&bl->waitq));
@@ -362,14 +362,14 @@ static void free_block(struct ngnfs_block *bl)
 	}
 }
 
-static struct ngnfs_block *alloc_block(u64 bnr, bool with_page)
+static struct rpdfs_block *alloc_block(u64 bnr, bool with_page)
 {
-	struct ngnfs_block *bl;
+	struct rpdfs_block *bl;
 
 	/* should know how to alloc sub pages */
-	BUILD_BUG_ON(NGNFS_BLOCK_SIZE < PAGE_SIZE);
+	BUILD_BUG_ON(RPDFS_BLOCK_SIZE < PAGE_SIZE);
 
-	bl = kzalloc(sizeof(struct ngnfs_block), GFP_NOFS);
+	bl = kzalloc(sizeof(struct rpdfs_block), GFP_NOFS);
 	if (bl) {
 		atomic_set(&bl->refcount, 1);
 		init_llist_node(&bl->dirty_llnode);
@@ -392,26 +392,26 @@ static struct ngnfs_block *alloc_block(u64 bnr, bool with_page)
 
 static void free_block_rcu(struct rcu_head *rcu)
 {
-	struct ngnfs_block *bl = container_of(rcu, struct ngnfs_block, rcu);
+	struct rpdfs_block *bl = container_of(rcu, struct rpdfs_block, rcu);
 
 	free_block(bl);
 }
 
-static void get_block(struct ngnfs_block *bl)
+static void get_block(struct rpdfs_block *bl)
 {
 	int now = atomic_inc_return(&bl->refcount);
 
-	trace_ngnfs_block_inc_refcount((long long)bl, now);
+	trace_rpdfs_block_inc_refcount((long long)bl, now);
 	BUG_ON(now <= 0);
 }
 
-static void put_block(struct ngnfs_block *bl)
+static void put_block(struct rpdfs_block *bl)
 {
 	int now = 0;
 
 	if (!IS_ERR_OR_NULL(bl)) {
 		now = atomic_dec_return(&bl->refcount);
-		trace_ngnfs_block_dec_refcount((long long)bl, now);
+		trace_rpdfs_block_dec_refcount((long long)bl, now);
 		if (now == 0)
 			call_rcu(&bl->rcu, free_block_rcu);
 		else
@@ -427,12 +427,12 @@ static void put_block(struct ngnfs_block *bl)
 #define SYNC_WAITERS_ERR 1
 #define SYNC_WAITERS_INC 2
 
-static void sync_waiters_inc(struct ngnfs_block_info *blinf)
+static void sync_waiters_inc(struct rpdfs_block_info *blinf)
 {
 	atomic_add(SYNC_WAITERS_INC, &blinf->sync_waiters);
 }
 
-static void sync_waiters_set_error(struct ngnfs_block_info *blinf)
+static void sync_waiters_set_error(struct rpdfs_block_info *blinf)
 {
 	int old;
 
@@ -442,7 +442,7 @@ static void sync_waiters_set_error(struct ngnfs_block_info *blinf)
 		 (atomic_cmpxchg(&blinf->sync_waiters, old, old | SYNC_WAITERS_ERR) != old));
 }
 
-static bool sync_waiters_has_error(struct ngnfs_block_info *blinf)
+static bool sync_waiters_has_error(struct rpdfs_block_info *blinf)
 {
 	return !!(atomic_read(&blinf->sync_waiters) & SYNC_WAITERS_ERR);
 }
@@ -452,7 +452,7 @@ static bool sync_waiters_has_error(struct ngnfs_block_info *blinf)
  * -EIO if there was an error while they were waiting, and clearing the
  * error if they were the last waiter.
  */
-static int sync_waiters_dec_error(struct ngnfs_block_info *blinf)
+static int sync_waiters_dec_error(struct rpdfs_block_info *blinf)
 {
 	int ret = 0;
 	int old;
@@ -470,32 +470,32 @@ static int sync_waiters_dec_error(struct ngnfs_block_info *blinf)
 	return ret;
 }
 
-static int send_to_bnr(struct ngnfs_fs_info *nfi, u64 bnr, struct ngnfs_msg_desc *mdesc)
+static int send_to_bnr(struct rpdfs_fs_info *nfi, u64 bnr, struct rpdfs_msg_desc *mdesc)
 {
 	struct sockaddr_in addr;
 	int ret;
 
-	ret = ngnfs_manifest_map_block(nfi, bnr, &addr);
+	ret = rpdfs_manifest_map_block(nfi, bnr, &addr);
 	if (ret == 0) {
 		mdesc->addr = &addr;
-		ret = ngnfs_msg_send(nfi, mdesc);
+		ret = rpdfs_msg_send(nfi, mdesc);
 	}
 
 	return ret;
 }
 
-static const struct rhashtable_params ngnfs_block_ht_params = {
-        .head_offset = offsetof(struct ngnfs_block, rhead),
-        .key_offset = offsetof(struct ngnfs_block, bnr),
-        .key_len = sizeof_field(struct ngnfs_block, bnr),
+static const struct rhashtable_params rpdfs_block_ht_params = {
+        .head_offset = offsetof(struct rpdfs_block, rhead),
+        .key_offset = offsetof(struct rpdfs_block, bnr),
+        .key_len = sizeof_field(struct rpdfs_block, bnr),
 };
 
-static struct ngnfs_block *lookup_block(struct ngnfs_block_info *blinf, u64 bnr)
+static struct rpdfs_block *lookup_block(struct rpdfs_block_info *blinf, u64 bnr)
 {
-	struct ngnfs_block *bl;
+	struct rpdfs_block *bl;
 
 	rcu_read_lock();
-	bl = rhashtable_lookup(&blinf->ht, &bnr, ngnfs_block_ht_params);
+	bl = rhashtable_lookup(&blinf->ht, &bnr, rpdfs_block_ht_params);
 	if (bl)
 		get_block(bl);
 	rcu_read_unlock();
@@ -507,10 +507,10 @@ static struct ngnfs_block *lookup_block(struct ngnfs_block_info *blinf, u64 bnr)
  * Returns a block with a reference held or an ERR_PTR on allocation
  * failure or lookup that won't allocate.
  */
-static struct ngnfs_block *lookup_or_alloc_block(struct ngnfs_block_info *blinf, u64 bnr)
+static struct rpdfs_block *lookup_or_alloc_block(struct rpdfs_block_info *blinf, u64 bnr)
 {
-	struct ngnfs_block *found;
-	struct ngnfs_block *bl;
+	struct rpdfs_block *found;
+	struct rpdfs_block *bl;
 
 	bl = lookup_block(blinf, bnr);
 	if (!bl) {
@@ -519,7 +519,7 @@ static struct ngnfs_block *lookup_or_alloc_block(struct ngnfs_block_info *blinf,
 			get_block(bl);
 			rcu_read_lock();
 			found = rhashtable_lookup_get_insert_fast(&blinf->ht, &bl->rhead,
-								  ngnfs_block_ht_params);
+								  rpdfs_block_ht_params);
 			if (found) {
 				put_block(bl);
 				put_block(bl);
@@ -533,16 +533,16 @@ static struct ngnfs_block *lookup_or_alloc_block(struct ngnfs_block_info *blinf,
 	return bl;
 }
 
-static int send_block_read(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl)
+static int send_block_read(struct rpdfs_fs_info *nfi, struct rpdfs_block *bl)
 {
-	struct ngnfs_msg_block_read br;
-	struct ngnfs_msg_desc mdesc;
-	struct ngnfs_block_state st;
+	struct rpdfs_msg_block_read br;
+	struct rpdfs_msg_desc mdesc;
+	struct rpdfs_block_state st;
 
 	br.bnr = cpu_to_le64(bl->bnr);
 	br.flags = 0;
 	if (st_expr(bl, &st, st.read_no_data))
-		br.flags |= cpu_to_le64(NGNFS_MSG_BLOCK_READ_FLAG_NO_DATA);
+		br.flags |= cpu_to_le64(RPDFS_MSG_BLOCK_READ_FLAG_NO_DATA);
 	br.mode = st.read_mode;
 	memset_zero_sizeof(br._pad);
 
@@ -550,7 +550,7 @@ static int send_block_read(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl)
 	mdesc.ctl_size = sizeof(br);
 	mdesc.data_page = NULL;
 	mdesc.data_size = 0;
-	mdesc.type = NGNFS_MSG_BLOCK_READ;
+	mdesc.type = RPDFS_MSG_BLOCK_READ;
 
 	return send_to_bnr(nfi, bl->bnr, &mdesc);
 }
@@ -561,24 +561,24 @@ static int send_block_read(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl)
  * not, the set will complete and an explicit ack will be sent once the
  * write is complete.
  */
-static int send_block_write(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl)
+static int send_block_write(struct rpdfs_fs_info *nfi, struct rpdfs_block *bl)
 {
-	struct ngnfs_msg_block_write bw;
-	struct ngnfs_msg_desc mdesc;
-	struct ngnfs_block_state st;
+	struct rpdfs_msg_block_write bw;
+	struct rpdfs_msg_desc mdesc;
+	struct rpdfs_block_state st;
 
 	bw.bnr = cpu_to_le64(bl->bnr);
 	if (st_expr(bl, &st, st.cache_mode_flushing))
 		bw.mode = st.mode;
 	else
-		bw.mode = NGNFS_CACHE_MODE_NULL;
+		bw.mode = RPDFS_CACHE_MODE_NULL;
 	memset_zero_sizeof(bw._pad);
 
 	mdesc.ctl_buf = &bw;
 	mdesc.ctl_size = sizeof(bw);
 	mdesc.data_page = bl->page;
-	mdesc.data_size = NGNFS_BLOCK_SIZE;
-	mdesc.type = NGNFS_MSG_BLOCK_WRITE;
+	mdesc.data_size = RPDFS_BLOCK_SIZE;
+	mdesc.type = RPDFS_MSG_BLOCK_WRITE;
 
 	return send_to_bnr(nfi, bl->bnr, &mdesc);
 }
@@ -587,11 +587,11 @@ static int send_block_write(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl)
  * Send an explicit ack of having set the mode that the server
  * requested.
  */
-static int send_block_mode_ack(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl)
+static int send_block_mode_ack(struct rpdfs_fs_info *nfi, struct rpdfs_block *bl)
 {
-	struct ngnfs_msg_cache_mode cm;
-	struct ngnfs_msg_desc mdesc;
-	struct ngnfs_block_state st;
+	struct rpdfs_msg_cache_mode cm;
+	struct rpdfs_msg_desc mdesc;
+	struct rpdfs_block_state st;
 
 	cm.bnr = cpu_to_le64(bl->bnr);
 	cm.mode = st_expr(bl, &st, st.mode);
@@ -601,7 +601,7 @@ static int send_block_mode_ack(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl
 	mdesc.ctl_size = sizeof(cm);
 	mdesc.data_page = NULL;
 	mdesc.data_size = 0;
-	mdesc.type = NGNFS_MSG_BLOCK_MODE_ACK;
+	mdesc.type = RPDFS_MSG_BLOCK_MODE_ACK;
 
 	return send_to_bnr(nfi, bl->bnr, &mdesc);
 }
@@ -610,7 +610,7 @@ static int send_block_mode_ack(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl
  * Called from within a change attempt.  The server must only send us
  * one set at a time.
  */
-static void start_set_cache_mode(struct ngnfs_block_state *st, u8 mode)
+static void start_set_cache_mode(struct rpdfs_block_state *st, u8 mode)
 {
 	BUG_ON(st->cache_mode_setting); /* XXX should be error handling */
 
@@ -618,17 +618,17 @@ static void start_set_cache_mode(struct ngnfs_block_state *st, u8 mode)
 	st->set_mode = mode;
 }
 
-static void finish_set_cache_mode(struct ngnfs_block *bl)
+static void finish_set_cache_mode(struct rpdfs_block *bl)
 {
-	struct ngnfs_block_state old;
-	struct ngnfs_block_state st;
+	struct rpdfs_block_state old;
+	struct rpdfs_block_state st;
 
 	st_change_prepare(bl, &old, &st);
 	do {
 		st.cache_mode_setting = 0;
 		st.cache_mode_acking = 0;
 		st.cache_mode_flushing = 0;
-		st.set_mode = NGNFS_CACHE_MODE_NULL;
+		st.set_mode = RPDFS_CACHE_MODE_NULL;
 
 	} while (!st_change_apply(bl, &old, &st));
 }
@@ -648,11 +648,11 @@ static void finish_set_cache_mode(struct ngnfs_block *bl)
  * In the common case this will be called when there isn't a mode set
  * pending and it will return after sampling the block state.
  */
-static void try_set_cache_mode(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl)
+static void try_set_cache_mode(struct rpdfs_fs_info *nfi, struct rpdfs_block *bl)
 {
-	struct ngnfs_block_info *blinf = nfi->block_info;
-	struct ngnfs_block_state old;
-	struct ngnfs_block_state st;
+	struct rpdfs_block_info *blinf = nfi->block_info;
+	struct rpdfs_block_state old;
+	struct rpdfs_block_state st;
 	bool incremented = false;
 	int ret;
 
@@ -663,8 +663,8 @@ static void try_set_cache_mode(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl
 			return;
 
 		/* have to wait for conflicting references to drain */
-		if ((st.set_mode < NGNFS_CACHE_MODE_WRITE && st.writer) ||
-		    (st.set_mode < NGNFS_CACHE_MODE_READ && st.readers))
+		if ((st.set_mode < RPDFS_CACHE_MODE_WRITE && st.writer) ||
+		    (st.set_mode < RPDFS_CACHE_MODE_READ && st.readers))
 			return;
 
 		/* adopt the new mode before sending the ack */
@@ -720,25 +720,25 @@ static void try_set_cache_mode(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl
  * requesting write mode and are going to overwrite the current data
  * (NBF_NEW -> _NO_DATA).
  */
-static int recv_block_read_result(struct ngnfs_fs_info *nfi, struct ngnfs_msg_desc *mdesc)
+static int recv_block_read_result(struct rpdfs_fs_info *nfi, struct rpdfs_msg_desc *mdesc)
 {
-	struct ngnfs_block_info *blinf = nfi->block_info;
-	struct ngnfs_msg_block_read_result *rr = mdesc->ctl_buf;
-	struct ngnfs_block_state old;
-	struct ngnfs_block_state st;
-	struct ngnfs_block *bl;
+	struct rpdfs_block_info *blinf = nfi->block_info;
+	struct rpdfs_msg_block_read_result *rr = mdesc->ctl_buf;
+	struct rpdfs_block_state old;
+	struct rpdfs_block_state st;
+	struct rpdfs_block *bl;
 	int err;
 
-	if (mdesc->ctl_size != sizeof(struct ngnfs_msg_block_read_result) ||
+	if (mdesc->ctl_size != sizeof(struct rpdfs_msg_block_read_result) ||
 	    (!!mdesc->data_size != !!mdesc->data_page) ||
-	    ((mdesc->data_size != 0) && (mdesc->data_size != NGNFS_BLOCK_SIZE)) ||
-	    ((rr->err != NGNFS_MSG_ERR_OK) && (mdesc->data_size != 0)))
+	    ((mdesc->data_size != 0) && (mdesc->data_size != RPDFS_BLOCK_SIZE)) ||
+	    ((rr->err != RPDFS_MSG_ERR_OK) && (mdesc->data_size != 0)))
 		return -EINVAL;
 
 	bl = lookup_block(blinf, le64_to_cpu(rr->bnr));
 	assert(!IS_ERR_OR_NULL(bl)); /* not supporting this failure yet */
 
-	err = ngnfs_msg_errno(rr->err);
+	err = rpdfs_msg_errno(rr->err);
 
 	/* set error before clearing io_pending */
 	if (err && st_cond_change(bl, &old, &st, !st.error, st.error = 1))
@@ -777,17 +777,17 @@ static int recv_block_read_result(struct ngnfs_fs_info *nfi, struct ngnfs_msg_de
 	return 0;
 }
 
-static int recv_block_write_result(struct ngnfs_fs_info *nfi, struct ngnfs_msg_desc *mdesc)
+static int recv_block_write_result(struct rpdfs_fs_info *nfi, struct rpdfs_msg_desc *mdesc)
 {
-	struct ngnfs_block_info *blinf = nfi->block_info;
-	struct ngnfs_msg_block_write_result *wr = mdesc->ctl_buf;
-	struct ngnfs_block_state old;
-	struct ngnfs_block_state st;
-	struct ngnfs_block *bl;
+	struct rpdfs_block_info *blinf = nfi->block_info;
+	struct rpdfs_msg_block_write_result *wr = mdesc->ctl_buf;
+	struct rpdfs_block_state old;
+	struct rpdfs_block_state st;
+	struct rpdfs_block *bl;
 	int nr_dirty;
 	int err;
 
-	if (mdesc->ctl_size != sizeof(struct ngnfs_msg_block_write_result) ||
+	if (mdesc->ctl_size != sizeof(struct rpdfs_msg_block_write_result) ||
 	    mdesc->data_size != 0)
 		return -EINVAL;
 
@@ -797,7 +797,7 @@ static int recv_block_write_result(struct ngnfs_fs_info *nfi, struct ngnfs_msg_d
 	assert(!IS_ERR_OR_NULL(bl)); /* XXX not supporting this failure yet */
 	BUG_ON(st_expr(bl, &st, !st.dirty)); /* XXX must have been dirty */
 
-	err = ngnfs_msg_errno(wr->err);
+	err = rpdfs_msg_errno(wr->err);
 	if (err) {
 		if (st_cond_change(bl, &old, &st, !st.error, st.error = 1))
 			bl->err = err;
@@ -824,14 +824,14 @@ static int recv_block_write_result(struct ngnfs_fs_info *nfi, struct ngnfs_msg_d
 	return 0;
 }
 
-static int recv_block_mode_set(struct ngnfs_fs_info *nfi, struct ngnfs_msg_desc *mdesc)
+static int recv_block_mode_set(struct rpdfs_fs_info *nfi, struct rpdfs_msg_desc *mdesc)
 {
-	struct ngnfs_block_info *blinf = nfi->block_info;
-	struct ngnfs_msg_cache_mode *cm = mdesc->ctl_buf;
-	struct ngnfs_block_state st;
-	struct ngnfs_block *bl;
+	struct rpdfs_block_info *blinf = nfi->block_info;
+	struct rpdfs_msg_cache_mode *cm = mdesc->ctl_buf;
+	struct rpdfs_block_state st;
+	struct rpdfs_block *bl;
 
-	if (mdesc->ctl_size != sizeof(struct ngnfs_msg_cache_mode) ||
+	if (mdesc->ctl_size != sizeof(struct rpdfs_msg_cache_mode) ||
 	    mdesc->data_size != 0)
 		return -EINVAL;
 
@@ -884,7 +884,7 @@ static void del_all_reverse_add_tail(struct list_head *list, struct llist_head *
 /*
  * XXX barriers?
  */
-static void try_queue_submit_work(struct ngnfs_block_info *blinf)
+static void try_queue_submit_work(struct rpdfs_block_info *blinf)
 {
 	if ((!list_empty(&blinf->submit.list) || !llist_empty(&blinf->submit.llist)) &&
 	    (atomic_read(&blinf->nr_submitted) < blinf->queue_depth))
@@ -895,20 +895,20 @@ static void try_queue_submit_work(struct ngnfs_block_info *blinf)
  * The submit work is responsible for keeping the transport's queue
  * depth full.
  */
-static void ngnfs_block_submit_work(struct work_struct *work)
+static void rpdfs_block_submit_work(struct work_struct *work)
 {
-	struct ngnfs_block_info *blinf = container_of(work, struct ngnfs_block_info, submit.work);
-	struct ngnfs_fs_info *nfi = blinf->nfi;
-	struct ngnfs_block_state st;
-	struct ngnfs_block *tmp;
-	struct ngnfs_block *bl;
+	struct rpdfs_block_info *blinf = container_of(work, struct rpdfs_block_info, submit.work);
+	struct rpdfs_fs_info *nfi = blinf->nfi;
+	struct rpdfs_block_state st;
+	struct rpdfs_block *tmp;
+	struct rpdfs_block *bl;
 	int submitted;
 	int space;
 	int ret;
 
 	del_all_reverse_add_tail(&blinf->submit.list, &blinf->submit.llist,
-				 offsetof(struct ngnfs_block, submit_head) -
-				 offsetof(struct ngnfs_block, submit_llnode));
+				 offsetof(struct rpdfs_block, submit_head) -
+				 offsetof(struct rpdfs_block, submit_llnode));
 
 	space = blinf->queue_depth - atomic_read(&blinf->nr_submitted);
 	submitted = 0;
@@ -954,7 +954,7 @@ static void ngnfs_block_submit_work(struct work_struct *work)
  *
  * XXX barriers?
  */
-static int should_flush(struct ngnfs_block_info *blinf)
+static int should_flush(struct rpdfs_block_info *blinf)
 {
 	int dirty = atomic_read(&blinf->nr_dirty);
 	int flushing = atomic_read(&blinf->nr_flushing);
@@ -972,7 +972,7 @@ static int should_flush(struct ngnfs_block_info *blinf)
 		return 0;
 }
 
-static void try_queue_flush_work(struct ngnfs_block_info *blinf)
+static void try_queue_flush_work(struct rpdfs_block_info *blinf)
 {
 	if (should_flush(blinf))
 		queue_work(blinf->flush.wq, &blinf->flush.work);
@@ -987,21 +987,21 @@ static void try_queue_flush_work(struct ngnfs_block_info *blinf)
  * grouping the blocks into transaction fragments and for resending if
  * the maps change.
  */
-static void ngnfs_block_flush_work(struct work_struct *work)
+static void rpdfs_block_flush_work(struct work_struct *work)
 {
-	struct ngnfs_block_info *blinf = container_of(work, struct ngnfs_block_info,
+	struct rpdfs_block_info *blinf = container_of(work, struct rpdfs_block_info,
 						      flush.work);
-	struct ngnfs_block_state old;
-	struct ngnfs_block_state st;
-	struct ngnfs_block *tmp;
-	struct ngnfs_block *bl;
+	struct rpdfs_block_state old;
+	struct rpdfs_block_state st;
+	struct rpdfs_block *tmp;
+	struct rpdfs_block *bl;
 	bool submitted = false;
 	int should;
 
 	/* always gather dirtied sets from llist for iteration */
 	del_all_reverse_add_tail(&blinf->flush.list, &blinf->flush.llist,
-				 offsetof(struct ngnfs_block, dirty_head) -
-				 offsetof(struct ngnfs_block, dirty_llnode));
+				 offsetof(struct rpdfs_block, dirty_head) -
+				 offsetof(struct rpdfs_block, dirty_llnode));
 
 	should = should_flush(blinf);
 	BUG_ON(should < 0);
@@ -1045,7 +1045,7 @@ static void ngnfs_block_flush_work(struct work_struct *work)
 
 }
 
-static void queue_clean_work(struct ngnfs_block_info *blinf)
+static void queue_clean_work(struct rpdfs_block_info *blinf)
 {
 	queue_work(blinf->clean.wq, &blinf->clean.work);
 }
@@ -1057,19 +1057,19 @@ static void queue_clean_work(struct ngnfs_block_info *blinf)
  * flush->clean list and wake them once all the write IO they're waiting
  * for is complete.
  */
-static void ngnfs_block_clean_work(struct work_struct *work)
+static void rpdfs_block_clean_work(struct work_struct *work)
 {
-	struct ngnfs_block_info *blinf = container_of(work, struct ngnfs_block_info, clean.work);
-	struct ngnfs_fs_info *nfi = blinf->nfi;
-	struct ngnfs_block_state old;
-	struct ngnfs_block_state st;
-	struct ngnfs_block *tmp;
-	struct ngnfs_block *bl;
+	struct rpdfs_block_info *blinf = container_of(work, struct rpdfs_block_info, clean.work);
+	struct rpdfs_fs_info *nfi = blinf->nfi;
+	struct rpdfs_block_state old;
+	struct rpdfs_block_state st;
+	struct rpdfs_block *tmp;
+	struct rpdfs_block *bl;
 	bool cleaned = false;
 
 	del_all_reverse_add_tail(&blinf->clean.list, &blinf->clean.llist,
-				 offsetof(struct ngnfs_block, dirty_head) -
-				 offsetof(struct ngnfs_block, dirty_llnode));
+				 offsetof(struct rpdfs_block, dirty_head) -
+				 offsetof(struct rpdfs_block, dirty_llnode));
 
 	list_for_each_entry_safe(bl, tmp, &blinf->clean.list, dirty_head) {
 
@@ -1104,9 +1104,9 @@ out:
 
 static u8 cache_mode_from_nbf(nbf_t nbf)
 {
-	return (nbf & NBF_READ) ? NGNFS_CACHE_MODE_READ :
-	       (nbf & NBF_WRITE) ? NGNFS_CACHE_MODE_WRITE :
-				   NGNFS_CACHE_MODE_NULL;
+	return (nbf & NBF_READ) ? RPDFS_CACHE_MODE_READ :
+	       (nbf & NBF_WRITE) ? RPDFS_CACHE_MODE_WRITE :
+				   RPDFS_CACHE_MODE_NULL;
 }
 
 /*
@@ -1116,7 +1116,7 @@ static u8 cache_mode_from_nbf(nbf_t nbf)
  * that it has a read ref and so being able to convert if it's the only
  * reader.
  */
-static bool conflicting_rw_refs(struct ngnfs_block_state *st, nbf_t nbf)
+static bool conflicting_rw_refs(struct rpdfs_block_state *st, nbf_t nbf)
 {
 	return st->writer ||
 	       ((nbf & NBF_WRITE) &&
@@ -1135,12 +1135,12 @@ static bool bad_nbf(nbf_t nbf)
  * definition.  Successfully acquired references must later be released
  * by calling _put().
  */
-struct ngnfs_block *ngnfs_block_get(struct ngnfs_fs_info *nfi, u64 bnr, nbf_t nbf)
+struct rpdfs_block *rpdfs_block_get(struct rpdfs_fs_info *nfi, u64 bnr, nbf_t nbf)
 {
-	struct ngnfs_block_info *blinf = nfi->block_info;
-	struct ngnfs_block *bl = NULL;
-	struct ngnfs_block_state old;
-	struct ngnfs_block_state st;
+	struct rpdfs_block_info *blinf = nfi->block_info;
+	struct rpdfs_block *bl = NULL;
+	struct rpdfs_block_state old;
+	struct rpdfs_block_state st;
 	bool need_read;
 	bool acquired;
 	u8 get_mode;
@@ -1212,7 +1212,7 @@ struct ngnfs_block *ngnfs_block_get(struct ngnfs_fs_info *nfi, u64 bnr, nbf_t nb
 
 	/* _NEW zeros block contents */
 	if (nbf & NBF_NEW) {
-		memset(ngnfs_block_buf(bl), 0, NGNFS_BLOCK_SIZE); /* XXX caller's job? */
+		memset(rpdfs_block_buf(bl), 0, RPDFS_BLOCK_SIZE); /* XXX caller's job? */
 		st_change(bl, &st, ((st.uptodate = 1), (st.error = 0)));
 		bl->err = 0;
 	}
@@ -1233,11 +1233,11 @@ out:
  * additional flags that change behaviour.  (We might want a more robust
  * "holder" struct that flags then modify.)
  */
-void ngnfs_block_put(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl, nbf_t nbf)
+void rpdfs_block_put(struct rpdfs_fs_info *nfi, struct rpdfs_block *bl, nbf_t nbf)
 {
-	struct ngnfs_block_info *blinf = nfi->block_info;
-	struct ngnfs_block_state old;
-	struct ngnfs_block_state st;
+	struct rpdfs_block_info *blinf = nfi->block_info;
+	struct rpdfs_block_state old;
+	struct rpdfs_block_state st;
 	bool dirtied = false;
 
 	/* first set dirty while write ref gives us exclusive access to block */
@@ -1268,12 +1268,12 @@ void ngnfs_block_put(struct ngnfs_fs_info *nfi, struct ngnfs_block *bl, nbf_t nb
 		try_queue_flush_work(blinf);
 }
 
-void *ngnfs_block_buf(struct ngnfs_block *bl)
+void *rpdfs_block_buf(struct rpdfs_block *bl)
 {
 	return page_address(bl->page);
 }
 
-struct page *ngnfs_block_page(struct ngnfs_block *bl)
+struct page *rpdfs_block_page(struct rpdfs_block *bl)
 {
 	return bl->page;
 }
@@ -1284,9 +1284,9 @@ struct page *ngnfs_block_page(struct ngnfs_block *bl)
  * proceed past this wait they can each dirty their full transaction's
  * worth of blocks.
  */
-void ngnfs_block_dirty_limit_wait(struct ngnfs_fs_info *nfi)
+void rpdfs_block_dirty_limit_wait(struct rpdfs_fs_info *nfi)
 {
-	struct ngnfs_block_info *blinf = nfi->block_info;
+	struct rpdfs_block_info *blinf = nfi->block_info;
 
 	/* XXX probably interruptible, io errors won't clear dirty */
 	wait_event(&blinf->waitq, atomic_read(&blinf->nr_dirty) < DIRTY_LIMIT);
@@ -1306,11 +1306,11 @@ void ngnfs_block_dirty_limit_wait(struct ngnfs_fs_info *nfi)
  * once the clean work finds it in the clean list after all previously
  * dirty blocks.
  */
-int ngnfs_block_sync(struct ngnfs_fs_info *nfi)
+int rpdfs_block_sync(struct rpdfs_fs_info *nfi)
 {
-	struct ngnfs_block_info *blinf = nfi->block_info;
-	struct ngnfs_block_state st;
-	struct ngnfs_block *bl;
+	struct rpdfs_block_info *blinf = nfi->block_info;
+	struct rpdfs_block_state st;
+	struct rpdfs_block *bl;
 
 	if (atomic_read(&blinf->nr_dirty) == 0)
 		return 0;
@@ -1333,15 +1333,15 @@ int ngnfs_block_sync(struct ngnfs_fs_info *nfi)
 	return sync_waiters_dec_error(blinf);
 }
 
-int ngnfs_block_setup(struct ngnfs_fs_info *nfi, int queue_depth)
+int rpdfs_block_setup(struct rpdfs_fs_info *nfi, int queue_depth)
 {
-	struct ngnfs_block_info *blinf;
+	struct rpdfs_block_info *blinf;
 	int ret;
 
 	if (WARN_ON_ONCE(queue_depth < 1))
 		return -EINVAL;
 
-	blinf = kzalloc(sizeof(struct ngnfs_block_info), GFP_KERNEL);
+	blinf = kzalloc(sizeof(struct rpdfs_block_info), GFP_KERNEL);
 	if (!blinf) {
 		ret = -ENOMEM;
 		goto out;
@@ -1354,26 +1354,26 @@ int ngnfs_block_setup(struct ngnfs_fs_info *nfi, int queue_depth)
 	atomic_set(&blinf->nr_mode_flushing, 0);
 	atomic_set(&blinf->nr_submitted, 0);
 	atomic_set(&blinf->sync_waiters, 0);
-	init_block_work_list(&blinf->flush, ngnfs_block_flush_work);
-	init_block_work_list(&blinf->submit, ngnfs_block_submit_work);
-	init_block_work_list(&blinf->clean, ngnfs_block_clean_work);
+	init_block_work_list(&blinf->flush, rpdfs_block_flush_work);
+	init_block_work_list(&blinf->submit, rpdfs_block_submit_work);
+	init_block_work_list(&blinf->clean, rpdfs_block_clean_work);
 	init_waitqueue_head(&blinf->waitq);
 
-	ret = rhashtable_init(&blinf->ht, &ngnfs_block_ht_params);
+	ret = rhashtable_init(&blinf->ht, &rpdfs_block_ht_params);
 	if (ret < 0)
 		goto out_free;
 
 	/* XXX use fs identifier in name */
-	blinf->flush.wq = create_singlethread_workqueue("ngnfs-flush");
-	blinf->submit.wq = create_singlethread_workqueue("ngnfs-submit");
-	blinf->clean.wq = create_singlethread_workqueue("ngnfs-clean");
+	blinf->flush.wq = create_singlethread_workqueue("rpdfs-flush");
+	blinf->submit.wq = create_singlethread_workqueue("rpdfs-submit");
+	blinf->clean.wq = create_singlethread_workqueue("rpdfs-clean");
 	if (!blinf->flush.wq || !blinf->submit.wq || !blinf->clean.wq) {
 		ret = -ENOMEM;
 		goto out_destroy;
 	}
-	ret = ngnfs_msg_register_recv(nfi, NGNFS_MSG_BLOCK_READ_RESULT, recv_block_read_result) ?:
-	      ngnfs_msg_register_recv(nfi, NGNFS_MSG_BLOCK_WRITE_RESULT, recv_block_write_result) ?:
-	      ngnfs_msg_register_recv(nfi, NGNFS_MSG_BLOCK_MODE_SET, recv_block_mode_set);
+	ret = rpdfs_msg_register_recv(nfi, RPDFS_MSG_BLOCK_READ_RESULT, recv_block_read_result) ?:
+	      rpdfs_msg_register_recv(nfi, RPDFS_MSG_BLOCK_WRITE_RESULT, recv_block_write_result) ?:
+	      rpdfs_msg_register_recv(nfi, RPDFS_MSG_BLOCK_MODE_SET, recv_block_mode_set);
 	if (ret < 0)
 		goto out_destroy;
 
@@ -1383,9 +1383,9 @@ int ngnfs_block_setup(struct ngnfs_fs_info *nfi, int queue_depth)
 
 out_destroy:
 	/* fine to call these if they aren't registered */
-	ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_BLOCK_READ_RESULT, recv_block_read_result);
-	ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_BLOCK_WRITE_RESULT, recv_block_write_result);
-	ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_BLOCK_MODE_SET, recv_block_mode_set);
+	rpdfs_msg_unregister_recv(nfi, RPDFS_MSG_BLOCK_READ_RESULT, recv_block_read_result);
+	rpdfs_msg_unregister_recv(nfi, RPDFS_MSG_BLOCK_WRITE_RESULT, recv_block_write_result);
+	rpdfs_msg_unregister_recv(nfi, RPDFS_MSG_BLOCK_MODE_SET, recv_block_mode_set);
 	destroy_block_work_list(&blinf->flush);
 	destroy_block_work_list(&blinf->submit);
 	destroy_block_work_list(&blinf->clean);
@@ -1402,7 +1402,7 @@ out:
  */
 static void free_ht_block(void *ptr, void *arg)
 {
-	struct ngnfs_block *bl = ptr;
+	struct rpdfs_block *bl = ptr;
 
 	put_block(bl);
 }
@@ -1412,16 +1412,16 @@ static void free_ht_block(void *ptr, void *arg)
  * work.  We shutdown the block transport to stop further IO completion
  * which could queue work.
  */
-void ngnfs_block_destroy(struct ngnfs_fs_info *nfi)
+void rpdfs_block_destroy(struct rpdfs_fs_info *nfi)
 {
-	struct ngnfs_block_info *blinf = nfi->block_info;
+	struct rpdfs_block_info *blinf = nfi->block_info;
 
 	if (blinf) {
-		ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_BLOCK_READ_RESULT,
+		rpdfs_msg_unregister_recv(nfi, RPDFS_MSG_BLOCK_READ_RESULT,
 					  recv_block_read_result);
-		ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_BLOCK_WRITE_RESULT,
+		rpdfs_msg_unregister_recv(nfi, RPDFS_MSG_BLOCK_WRITE_RESULT,
 					  recv_block_write_result);
-		ngnfs_msg_unregister_recv(nfi, NGNFS_MSG_BLOCK_MODE_SET,
+		rpdfs_msg_unregister_recv(nfi, RPDFS_MSG_BLOCK_MODE_SET,
 					  recv_block_mode_set);
 
 		/* any queued work is drained before destruction */

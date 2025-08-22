@@ -33,8 +33,8 @@
 #include "cli/cli.h"
 
 struct debugfs_context {
-	struct ngnfs_inode_ino_gen cwd_ig;
-	struct ngnfs_fs_info *nfi;
+	struct rpdfs_inode_ino_gen cwd_ig;
+	struct rpdfs_fs_info *nfi;
 	bool quit;
 	int ret;
 };
@@ -64,8 +64,8 @@ static void print_err(char *cmd, int err)
 
 static void cmd_bcreate(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_dir_lookup_entry lent;
-	char filename[NGNFS_NAME_MAX];
+	struct rpdfs_dir_lookup_entry lent;
+	char filename[RPDFS_NAME_MAX];
 	char *dir;
 	u64 creates, max, i;
 	int ret;
@@ -78,15 +78,15 @@ static void cmd_bcreate(struct debugfs_context *ctx, int argc, char **argv)
 	dir = argv[1];
 
 	/* number of files is link max minus . and .. */
-	max = NGNFS_LINK_MAX - 2;
+	max = RPDFS_LINK_MAX - 2;
 	ret = parse_ull(&creates, argv[2], 1, max);
 	if (ret < 0) {
 		printf("number of creates must be between 1 and %llu\n", max);
 		return;
 	}
 
-	ret = ngnfs_dir_mkdir(ctx->nfi, &ctx->cwd_ig, 0755, dir, strlen(dir))			?:
-	      ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, dir, strlen(dir), &lent);
+	ret = rpdfs_dir_mkdir(ctx->nfi, &ctx->cwd_ig, 0755, dir, strlen(dir))			?:
+	      rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, dir, strlen(dir), &lent);
 
 	if (ret < 0) {
 		print_err("bcreate: mkdir", ret);
@@ -96,7 +96,7 @@ static void cmd_bcreate(struct debugfs_context *ctx, int argc, char **argv)
 	for (i = 0; i < creates; i++) {
 		snprintf(filename, sizeof(filename), "%llu", i);
 
-		ret = ngnfs_dir_create(ctx->nfi, &lent.ig, 0644, filename, strlen(filename));
+		ret = rpdfs_dir_create(ctx->nfi, &lent.ig, 0644, filename, strlen(filename));
 		if (ret < 0) {
 			print_err("bcreate: create", ret);
 			return;
@@ -106,8 +106,8 @@ static void cmd_bcreate(struct debugfs_context *ctx, int argc, char **argv)
 
 static void cmd_brename(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_dir_lookup_entry lent, sub_lent;
-	char filename[NGNFS_NAME_MAX];
+	struct rpdfs_dir_lookup_entry lent, sub_lent;
+	char filename[RPDFS_NAME_MAX];
 	char *subdir = "tmp";
 	char *dir;
 	u64 renames, max, i;
@@ -121,17 +121,17 @@ static void cmd_brename(struct debugfs_context *ctx, int argc, char **argv)
 	dir = argv[1];
 
 	/* number of files is link max, minus . and .., minus the subdir */
-	max = NGNFS_LINK_MAX - 3;
+	max = RPDFS_LINK_MAX - 3;
 	ret = parse_ull(&renames, argv[2], 1, max);
 	if (ret < 0) {
 		printf("number of renames must be between 1 and %llu\n", max);
 		return;
 	}
 
-	ret = ngnfs_dir_mkdir(ctx->nfi, &ctx->cwd_ig, 0755, dir, strlen(dir))			?:
-	      ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, dir, strlen(dir), &lent)			?:
-	      ngnfs_dir_mkdir(ctx->nfi, &lent.ig, 0755, subdir, strlen(subdir))			?:
-	      ngnfs_dir_lookup(ctx->nfi, &lent.ig, subdir, strlen(subdir), &sub_lent);
+	ret = rpdfs_dir_mkdir(ctx->nfi, &ctx->cwd_ig, 0755, dir, strlen(dir))			?:
+	      rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, dir, strlen(dir), &lent)			?:
+	      rpdfs_dir_mkdir(ctx->nfi, &lent.ig, 0755, subdir, strlen(subdir))			?:
+	      rpdfs_dir_lookup(ctx->nfi, &lent.ig, subdir, strlen(subdir), &sub_lent);
 
 	if (ret < 0) {
 		print_err("brename: mkdir", ret);
@@ -141,13 +141,13 @@ static void cmd_brename(struct debugfs_context *ctx, int argc, char **argv)
 	for (i = 0; i < renames; i++) {
 		snprintf(filename, sizeof(filename), "%llu", i);
 
-		ret = ngnfs_dir_create(ctx->nfi, &sub_lent.ig, 0644, filename, strlen(filename));
+		ret = rpdfs_dir_create(ctx->nfi, &sub_lent.ig, 0644, filename, strlen(filename));
 		if (ret < 0) {
 			print_err("brename: create", ret);
 			return;
 		}
 
-		ret = ngnfs_dir_rename(ctx->nfi, &sub_lent.ig, filename, strlen(filename), &lent.ig,
+		ret = rpdfs_dir_rename(ctx->nfi, &sub_lent.ig, filename, strlen(filename), &lent.ig,
 				       filename, strlen(filename));
 		if (ret < 0) {
 			print_err("brename: rename", ret);
@@ -158,9 +158,9 @@ static void cmd_brename(struct debugfs_context *ctx, int argc, char **argv)
 
 static void cmd_btree_info(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_inode_ino_gen ig = ctx->cwd_ig;
-	struct ngnfs_dir_lookup_entry lent;
-	struct ngnfs_inode ninode;
+	struct rpdfs_inode_ino_gen ig = ctx->cwd_ig;
+	struct rpdfs_dir_lookup_entry lent;
+	struct rpdfs_inode ninode;
 	char *name;
 	int ret;
 
@@ -171,7 +171,7 @@ static void cmd_btree_info(struct debugfs_context *ctx, int argc, char **argv)
 
 	if (argc == 2) {
 		name = argv[1];
-		ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, strlen(name), &lent);
+		ret = rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, strlen(name), &lent);
 		if (ret < 0) {
 			print_err("btree_info", ret);
 			return;
@@ -179,7 +179,7 @@ static void cmd_btree_info(struct debugfs_context *ctx, int argc, char **argv)
 		ig = lent.ig;
 	}
 
-	ret = ngnfs_inode_read_copy(ctx->nfi, &ig, &ninode, sizeof(ninode));
+	ret = rpdfs_inode_read_copy(ctx->nfi, &ig, &ninode, sizeof(ninode));
 
 	if (ret < 0) {
 		print_err("btree_info", ret);
@@ -217,9 +217,9 @@ static void cmd_btree_pb(struct debugfs_context *ctx, int argc, char **argv)
 		return;
 	}
 
-	ret = ngnfs_print_btree_block(ctx->nfi, bnr, "debugfs");
+	ret = rpdfs_print_btree_block(ctx->nfi, bnr, "debugfs");
 	if (ret < 0) {
-		print_err("ngnfs_print_btree_block", ret);
+		print_err("rpdfs_print_btree_block", ret);
 		return;
 	}
 
@@ -228,7 +228,7 @@ static void cmd_btree_pb(struct debugfs_context *ctx, int argc, char **argv)
 
 static void cmd_cd(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_dir_lookup_entry lent;
+	struct rpdfs_dir_lookup_entry lent;
 	char *name;
 	int ret;
 
@@ -239,7 +239,7 @@ static void cmd_cd(struct debugfs_context *ctx, int argc, char **argv)
 
 	name = argv[1];
 
-	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, strlen(name), &lent);
+	ret = rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, strlen(name), &lent);
 	if (ret < 0) {
 		print_err("cd", ret);
 		return;
@@ -262,16 +262,16 @@ static void cmd_create(struct debugfs_context *ctx, int argc, char **argv)
 		return;
 	}
 
-	ret = ngnfs_dir_create(ctx->nfi, &ctx->cwd_ig, 0644, argv[1], strlen(argv[1]));
+	ret = rpdfs_dir_create(ctx->nfi, &ctx->cwd_ig, 0644, argv[1], strlen(argv[1]));
 	if (ret < 0)
 		print_err("create", ret);
 }
 
 static void cmd_getxattr(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_dir_lookup_entry lent;
+	struct rpdfs_dir_lookup_entry lent;
 	char *filename, *xname, *value;
-	size_t val_size = NGNFS_BTREE_MAX_VAL_SIZE;
+	size_t val_size = RPDFS_BTREE_MAX_VAL_SIZE;
 	int ret;
 
 	if (argc != 3) {
@@ -288,13 +288,13 @@ static void cmd_getxattr(struct debugfs_context *ctx, int argc, char **argv)
 		return;
 	}
 
-	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	ret = rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
 	if (ret < 0) {
 		print_err("getxattr", ret);
 		goto out;
 	}
 
-	ret = ngnfs_xattr_get(ctx->nfi, &lent.ig, xname, value, val_size);
+	ret = rpdfs_xattr_get(ctx->nfi, &lent.ig, xname, value, val_size);
 	if (ret < 0) {
 		print_err("getxattr", ret);
 		goto out;
@@ -307,7 +307,7 @@ out:
 
 static void cmd_listxattr(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_dir_lookup_entry lent;
+	struct rpdfs_dir_lookup_entry lent;
 	char *filename;
 	char *buf, *next;
 	u64 buf_size = 64 * 1024; /* default max name list */
@@ -333,13 +333,13 @@ static void cmd_listxattr(struct debugfs_context *ctx, int argc, char **argv)
 		return;
 	}
 
-	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	ret = rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
 	if (ret < 0) {
 		print_err("listxattr", ret);
 		goto out;
 	}
 
-	bytes = ngnfs_xattr_list(ctx->nfi, &lent.ig, buf, buf_size);
+	bytes = rpdfs_xattr_list(ctx->nfi, &lent.ig, buf, buf_size);
 	if (bytes < 0) {
 		print_err("listxattr", bytes);
 		goto out;
@@ -362,7 +362,7 @@ out:
 
 static void cmd_lookup(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_dir_lookup_entry lent;
+	struct rpdfs_dir_lookup_entry lent;
 	char *name;
 	int name_len;
 	int ret;
@@ -375,7 +375,7 @@ static void cmd_lookup(struct debugfs_context *ctx, int argc, char **argv)
 	name = argv[1];
 	name_len = strlen(name);
 
-	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, name_len, &lent);
+	ret = rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, name_len, &lent);
 	if (ret < 0) {
 		print_err("lookup", ret);
 		return;
@@ -403,7 +403,7 @@ static void cmd_mkdir(struct debugfs_context *ctx, int argc, char **argv)
 		return;
 	}
 
-	ret = ngnfs_dir_mkdir(ctx->nfi, &ctx->cwd_ig, 0755, argv[1], strlen(argv[1]));
+	ret = rpdfs_dir_mkdir(ctx->nfi, &ctx->cwd_ig, 0755, argv[1], strlen(argv[1]));
 	if (ret < 0)
 		print_err("mkdir", ret);
 }
@@ -412,13 +412,13 @@ static void cmd_mkfs(struct debugfs_context *ctx, int argc, char **argv)
 {
 	int ret;
 
-	ret = ngnfs_mkfs(ctx->nfi);
+	ret = rpdfs_mkfs(ctx->nfi);
 	if (ret < 0) {
 		print_err("mkfs", ret);
 		return;
 	}
 
-	ret = ngnfs_block_sync(ctx->nfi);
+	ret = rpdfs_block_sync(ctx->nfi);
 	if (ret < 0)
 		print_err("mkfs: final sync", ret);
 }
@@ -431,13 +431,13 @@ static void cmd_quit(struct debugfs_context *ctx, int argc, char **argv)
 
 static void cmd_read(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_dir_lookup_entry lent;
+	struct rpdfs_dir_lookup_entry lent;
 	char *filename;
 	char *buf;
 	u64 offset, read_size;
 	u64 todo, done, zeroes, poisoned, garbage;
 	u64 i;
-	int buf_size = 4 * NGNFS_DATA_MAX_IO; /* allow multiple txn's per call */
+	int buf_size = 4 * RPDFS_DATA_MAX_IO; /* allow multiple txn's per call */
 	int ret;
 
 	if (argc != 4) {
@@ -466,7 +466,7 @@ static void cmd_read(struct debugfs_context *ctx, int argc, char **argv)
 		return;
 	}
 
-	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	ret = rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
 	if (ret < 0) {
 		print_err("read", ret);
 		goto out;
@@ -483,7 +483,7 @@ static void cmd_read(struct debugfs_context *ctx, int argc, char **argv)
 
 		memset(buf, 'x', todo); /* poison the buffer */
 
-		ret = ngnfs_data_read(ctx->nfi, &lent.ig, offset, buf, todo);
+		ret = rpdfs_data_read(ctx->nfi, &lent.ig, offset, buf, todo);
 		if (ret < 0) {
 			print_err("read", ret);
 			goto out;
@@ -530,9 +530,9 @@ out:
 
 static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_readdir_entry *buf;
-	struct ngnfs_readdir_entry *ent;
-	const int size = NGNFS_READDIR_MIN_BUF_SIZE * 10;
+	struct rpdfs_readdir_entry *buf;
+	struct rpdfs_readdir_entry *ent;
+	const int size = RPDFS_READDIR_MIN_BUF_SIZE * 10;
 	u64 total = 0;
 	u64 pos;
 	int ret;
@@ -559,7 +559,7 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 	}
 
 	while (true) {
-		ret = ngnfs_dir_readdir(ctx->nfi, &ctx->cwd_ig, pos, buf, size);
+		ret = rpdfs_dir_readdir(ctx->nfi, &ctx->cwd_ig, pos, buf, size);
 		if (ret <= 0) {
 			if (ret < 0)
 				print_err("readdir", ret);
@@ -585,7 +585,7 @@ static void cmd_readdir(struct debugfs_context *ctx, int argc, char **argv)
 
 static void cmd_removexattr(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_dir_lookup_entry lent;
+	struct rpdfs_dir_lookup_entry lent;
 	char *filename, *xname;
 	int ret;
 
@@ -597,13 +597,13 @@ static void cmd_removexattr(struct debugfs_context *ctx, int argc, char **argv)
 	filename = argv[1];
 	xname = argv[2];
 
-	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	ret = rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
 	if (ret < 0) {
 		print_err("removexattr", ret);
 		return;
 	}
 
-	ret = ngnfs_xattr_remove(ctx->nfi, &lent.ig, xname);
+	ret = rpdfs_xattr_remove(ctx->nfi, &lent.ig, xname);
 	if (ret < 0)
 		print_err("removexattr", ret);
 }
@@ -614,7 +614,7 @@ static void cmd_removexattr(struct debugfs_context *ctx, int argc, char **argv)
  */
 static void cmd_rename(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_dir_lookup_entry parent;
+	struct rpdfs_dir_lookup_entry parent;
 	char *name;
 	size_t name_len;
 	int ret;
@@ -628,8 +628,8 @@ static void cmd_rename(struct debugfs_context *ctx, int argc, char **argv)
 	name = argv[1];
 	name_len = strlen(name);
 
-	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, "..", strlen(".."), &parent)		?:
-	      ngnfs_dir_rename(ctx->nfi, &ctx->cwd_ig, name, name_len, &parent.ig, name, name_len);
+	ret = rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, "..", strlen(".."), &parent)		?:
+	      rpdfs_dir_rename(ctx->nfi, &ctx->cwd_ig, name, name_len, &parent.ig, name, name_len);
 
 	if (ret < 0)
 		print_err("rename", ret);
@@ -647,14 +647,14 @@ static void cmd_rmdir(struct debugfs_context *ctx, int argc, char **argv)
 
 	name = argv[1];
 
-	ret = ngnfs_dir_rmdir(ctx->nfi, &ctx->cwd_ig, name, strlen(name));
+	ret = rpdfs_dir_rmdir(ctx->nfi, &ctx->cwd_ig, name, strlen(name));
 	if (ret < 0)
 		print_err("rmdir", ret);
 }
 
 static void cmd_setxattr(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_dir_lookup_entry lent;
+	struct rpdfs_dir_lookup_entry lent;
 	char *filename, *xname, *value;
 	int flags;
 	int ret;
@@ -682,22 +682,22 @@ static void cmd_setxattr(struct debugfs_context *ctx, int argc, char **argv)
 		}
 	}
 
-	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	ret = rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
 	if (ret < 0) {
 		print_err("setxattr", ret);
 		return;
 	}
 
-	ret = ngnfs_xattr_set(ctx->nfi, &lent.ig, xname, value, strlen(value), flags);
+	ret = rpdfs_xattr_set(ctx->nfi, &lent.ig, xname, value, strlen(value), flags);
 	if (ret < 0)
 		print_err("setxattr", ret);
 }
 
 static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_inode_ino_gen ig = ctx->cwd_ig;
-	struct ngnfs_dir_lookup_entry lent;
-	struct ngnfs_inode ninode;
+	struct rpdfs_inode_ino_gen ig = ctx->cwd_ig;
+	struct rpdfs_dir_lookup_entry lent;
+	struct rpdfs_inode ninode;
 	char *name;
 	int ret;
 
@@ -708,7 +708,7 @@ static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 
 	if (argc == 2) {
 		name = argv[1];
-		ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, strlen(name), &lent);
+		ret = rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, name, strlen(name), &lent);
 		if (ret < 0) {
 			print_err("stat", ret);
 			return;
@@ -716,7 +716,7 @@ static void cmd_stat(struct debugfs_context *ctx, int argc, char **argv)
 		ig = lent.ig;
 	}
 
-	ret = ngnfs_inode_read_copy(ctx->nfi, &ig, &ninode, sizeof(ninode));
+	ret = rpdfs_inode_read_copy(ctx->nfi, &ig, &ninode, sizeof(ninode));
 
 	if (ret < 0) {
 		print_err("stat", ret);
@@ -753,7 +753,7 @@ static void cmd_sync(struct debugfs_context *ctx, int argc, char **argv)
 {
 	int ret;
 
-	ret = ngnfs_block_sync(ctx->nfi);
+	ret = rpdfs_block_sync(ctx->nfi);
 	if (ret < 0)
 		print_err("sync", ret);
 }
@@ -770,19 +770,19 @@ static void cmd_unlink(struct debugfs_context *ctx, int argc, char **argv)
 
 	name = argv[1];
 
-	ret = ngnfs_dir_unlink(ctx->nfi, &ctx->cwd_ig, name, strlen(name));
+	ret = rpdfs_dir_unlink(ctx->nfi, &ctx->cwd_ig, name, strlen(name));
 	if (ret < 0)
 		print_err("unlink", ret);
 }
 
 static void cmd_write(struct debugfs_context *ctx, int argc, char **argv)
 {
-	struct ngnfs_dir_lookup_entry lent;
+	struct rpdfs_dir_lookup_entry lent;
 	char *filename;
 	char *buf;
 	u64 offset;
 	u64 write_size;
-	u64 buf_size = 4 * NGNFS_DATA_MAX_IO; /* allow multiple txn's per call */
+	u64 buf_size = 4 * RPDFS_DATA_MAX_IO; /* allow multiple txn's per call */
 	u64 todo, done;
 	int ret;
 
@@ -813,7 +813,7 @@ static void cmd_write(struct debugfs_context *ctx, int argc, char **argv)
 	}
 	memset(buf, '.', buf_size);
 
-	ret = ngnfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
+	ret = rpdfs_dir_lookup(ctx->nfi, &ctx->cwd_ig, filename, strlen(filename), &lent);
 	if (ret < 0) {
 		print_err("write", ret);
 		goto out;
@@ -824,7 +824,7 @@ static void cmd_write(struct debugfs_context *ctx, int argc, char **argv)
 		if (todo > buf_size)
 			todo = buf_size;
 
-		ret = ngnfs_data_write(ctx->nfi, &lent.ig, offset, buf, todo);
+		ret = rpdfs_data_write(ctx->nfi, &lent.ig, offset, buf, todo);
 
 		if (ret < 0) {
 			print_err("write", ret);
@@ -958,7 +958,7 @@ static void debugfs_thread(struct thread *thr, void *arg)
 			break;
 	}
 
-	ret = ngnfs_block_sync(ctx->nfi);
+	ret = rpdfs_block_sync(ctx->nfi);
 	if (ret < 0)
 		print_err("final sync", ret);
 out:
@@ -969,7 +969,7 @@ out:
 }
 
 /*
- * We have the debugfs command run in a thread so that it can call ngnfs
+ * We have the debugfs command run in a thread so that it can call rpdfs
  * client operations (pfs, block, txn) directly.  That dictates its
  * signal handling behaviour and makes it uninterruptible.  We park this
  * initial cli command function as a monitoring thread that can stop the
@@ -977,10 +977,10 @@ out:
  */
 static int debugfs_func(int argc, char **argv)
 {
-	struct ngnfs_fs_info nfi = INIT_NGNFS_FS_INFO;
+	struct rpdfs_fs_info nfi = INIT_RPDFS_FS_INFO;
 	struct debugfs_context ctx = {
 		.nfi = &nfi,
-		.cwd_ig = INIT_NGNFS_ROOT_IG,
+		.cwd_ig = INIT_RPDFS_ROOT_IG,
 		.quit = false,
 	};
 	struct thread thr;
@@ -988,7 +988,7 @@ static int debugfs_func(int argc, char **argv)
 
 	thread_init(&thr);
 
-	ret = ngnfs_mount(&nfi, argc, argv);
+	ret = rpdfs_mount(&nfi, argc, argv);
 	if (ret < 0)
 		goto out;
 
@@ -996,7 +996,7 @@ static int debugfs_func(int argc, char **argv)
 	      thread_sigwait();
 
 	thread_stop_wait(&thr);
-	ngnfs_unmount(&nfi);
+	rpdfs_unmount(&nfi);
 	thread_finish_main();
 out:
 	return ret ?: ctx.ret;

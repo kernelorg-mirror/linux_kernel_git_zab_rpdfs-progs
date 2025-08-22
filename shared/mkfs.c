@@ -14,25 +14,25 @@
  * initialize allocation blocks and that means needing to see the size
  * of the volume.
  */
-int ngnfs_mkfs(struct ngnfs_fs_info *nfi)
+int rpdfs_mkfs(struct rpdfs_fs_info *nfi)
 {
-	struct ngnfs_transaction txn;
-	struct ngnfs_inode_txn_ref itref;
-	struct ngnfs_inode_ino_gen ig = INIT_NGNFS_ROOT_IG;
+	struct rpdfs_transaction txn;
+	struct rpdfs_inode_txn_ref itref;
+	struct rpdfs_inode_ino_gen ig = INIT_RPDFS_ROOT_IG;
 	u64 nsec;
 	int ret;
 
-	ngnfs_txn_init(&txn);
+	rpdfs_txn_init(&txn);
 
 	do {
 		nsec = ktime_to_ns(ktime_get_real());
 
-		ret = ngnfs_inode_get(nfi, &txn, NBF_WRITE, &ig, &itref)			?:
-		      ngnfs_inode_init(&itref, &ig, 2, S_IFDIR | 0755, nsec, &ig);
+		ret = rpdfs_inode_get(nfi, &txn, NBF_WRITE, &ig, &itref)			?:
+		      rpdfs_inode_init(&itref, &ig, 2, S_IFDIR | 0755, nsec, &ig);
 
-	} while (ngnfs_txn_retry(nfi, &txn, &ret));
+	} while (rpdfs_txn_retry(nfi, &txn, &ret));
 
-	ngnfs_txn_teardown(nfi, &txn);
+	rpdfs_txn_teardown(nfi, &txn);
 
 	return ret;
 }

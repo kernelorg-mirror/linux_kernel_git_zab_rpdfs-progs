@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-#ifndef NGNFS_SHARED_LK_RBTREE_H
-#define NGNFS_SHARED_LK_RBTREE_H
+#ifndef RPDFS_SHARED_LK_RBTREE_H
+#define RPDFS_SHARED_LK_RBTREE_H
 
 /*
  * This is the kernel's rbtree.h after:

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_URCU_H
-#define NGNFS_SHARED_URCU_H
+#ifndef RPDFS_SHARED_URCU_H
+#define RPDFS_SHARED_URCU_H
 
 /*
  * Provide a consistent urcu flavor for all users.

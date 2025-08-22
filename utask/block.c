@@ -184,7 +184,7 @@ static void unhash_cblk(struct block_cache_instance *inst, struct cached_block *
  * that seems not tiny but also won't overwhelm guests with small
  * amounts of memory and a handful of processes.
  */
-#define MAX_CACHED_BLOCKS	(256 * 1024 * 1024 / NGNFS_BLOCK_SIZE)
+#define MAX_CACHED_BLOCKS	(256 * 1024 * 1024 / RPDFS_BLOCK_SIZE)
 #define HOT_FIFO_PCT		10
 #define COLD_FIFO_PCT		(100 - HOT_FIFO_PCT)
 
@@ -303,7 +303,7 @@ static void io_completion(struct io_uring_cqe *cqe, struct utask_cqe_callback *c
 	DTRACEF_CBLK("block_io_complete", cblk, "res %d", cqe->res);
 
 	/* XXX error handling :) */
-	BUG_ON(cqe->res != NGNFS_BLOCK_SIZE);
+	BUG_ON(cqe->res != RPDFS_BLOCK_SIZE);
 	err = 0;
 
 	if (cblk->dirty) {
@@ -358,13 +358,13 @@ static void submit_utask(void *data)
 			if (cblk->dirty)
 				io_uring_prep_write(sqe, inst->dev_fd,
 						    page_address(cblk->data_page),
-						    NGNFS_BLOCK_SIZE,
-						    cblk->bnr << NGNFS_BLOCK_SHIFT);
+						    RPDFS_BLOCK_SIZE,
+						    cblk->bnr << RPDFS_BLOCK_SHIFT);
 			else
 				io_uring_prep_read(sqe, inst->dev_fd,
 						   page_address(cblk->data_page),
-						   NGNFS_BLOCK_SIZE,
-						   cblk->bnr << NGNFS_BLOCK_SHIFT);
+						   RPDFS_BLOCK_SIZE,
+						   cblk->bnr << RPDFS_BLOCK_SHIFT);
 
 			DTRACEF_CBLK("block_io_submit", cblk, "");
 
@@ -676,7 +676,7 @@ int block_init(char *dev_path, unsigned long queue_depth)
 	if (ret < 0)
 		goto out;
 
-	inst->total_blocks = size / NGNFS_BLOCK_SIZE;
+	inst->total_blocks = size / RPDFS_BLOCK_SIZE;
 
 	inst->cache_ht = htable_alloc(MAX_CACHED_BLOCKS);
 	if (!inst->cache_ht) {

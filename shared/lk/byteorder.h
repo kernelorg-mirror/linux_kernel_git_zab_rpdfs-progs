@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_BYTEORDER_H
-#define NGNFS_SHARED_BYTEORDER_H
+#ifndef RPDFS_SHARED_BYTEORDER_H
+#define RPDFS_SHARED_BYTEORDER_H
 
 #include <endian.h>
 

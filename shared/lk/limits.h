@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_LK_LIMITS_H
-#define NGNFS_SHARED_LK_LIMITS_H
+#ifndef RPDFS_SHARED_LK_LIMITS_H
+#define RPDFS_SHARED_LK_LIMITS_H
 
 #include <limits.h>
 

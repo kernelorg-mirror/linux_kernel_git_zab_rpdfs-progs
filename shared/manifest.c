@@ -12,14 +12,14 @@
 #include "shared/fs_info.h"
 #include "shared/manifest.h"
 
-struct ngnfs_manifest_info {
+struct rpdfs_manifest_info {
 	u8 nr_addrs;
 	struct sockaddr_in addrs[];
 };
 
-int ngnfs_manifest_map_block(struct ngnfs_fs_info *nfi, u64 bnr, struct sockaddr_in *addr)
+int rpdfs_manifest_map_block(struct rpdfs_fs_info *nfi, u64 bnr, struct sockaddr_in *addr)
 {
-	struct ngnfs_manifest_info *mfinf = nfi->manifest_info;
+	struct rpdfs_manifest_info *mfinf = nfi->manifest_info;
 	u32 rem;
 
 	div_u64_rem(bnr, mfinf->nr_addrs, &rem);
@@ -36,14 +36,14 @@ int ngnfs_manifest_map_block(struct ngnfs_fs_info *nfi, u64 bnr, struct sockaddr
  * numbers to device block numbers.  Each device must be able to store
  * the entire block space.
  */
-int ngnfs_manifest_setup(struct ngnfs_fs_info *nfi, struct list_head *list, u8 nr)
+int rpdfs_manifest_setup(struct rpdfs_fs_info *nfi, struct list_head *list, u8 nr)
 {
-	struct ngnfs_manifest_addr_head *ahead;
-	struct ngnfs_manifest_info *mfinf;
+	struct rpdfs_manifest_addr_head *ahead;
+	struct rpdfs_manifest_info *mfinf;
 	struct sockaddr_in *addr;
 	int ret;
 
-	mfinf = kmalloc(offsetof(struct ngnfs_manifest_info, addrs[nr]), GFP_NOFS);
+	mfinf = kmalloc(offsetof(struct rpdfs_manifest_info, addrs[nr]), GFP_NOFS);
 	if (!mfinf) {
 		ret = -ENOMEM;
 		goto out;
@@ -75,9 +75,9 @@ out:
 	return ret;
 }
 
-void ngnfs_manifest_destroy(struct ngnfs_fs_info *nfi)
+void rpdfs_manifest_destroy(struct rpdfs_fs_info *nfi)
 {
-	struct ngnfs_manifest_info *mfinf = nfi->manifest_info;
+	struct rpdfs_manifest_info *mfinf = nfi->manifest_info;
 
 	if (mfinf) {
 		kfree(mfinf);

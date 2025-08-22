@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_PARSE_H
-#define NGNFS_SHARED_PARSE_H
+#ifndef RPDFS_SHARED_PARSE_H
+#define RPDFS_SHARED_PARSE_H
 
 int parse_ull(unsigned long long *ull, char *str, unsigned long long least,
 	      unsigned long long most);

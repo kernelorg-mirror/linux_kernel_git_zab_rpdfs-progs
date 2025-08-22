@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_LK_GFP_H
-#define NGNFS_SHARED_LK_GFP_H
+#ifndef RPDFS_SHARED_LK_GFP_H
+#define RPDFS_SHARED_LK_GFP_H
 
 #include <string.h>
 
@@ -10,7 +10,7 @@
 
 /*
  * As a userspace implementation without hardware constraints, this
- * becomes an arbitrary choice of convenience.  ngnfs uses a 4k block
+ * becomes an arbitrary choice of convenience.  rpdfs uses a 4k block
  * size so we might as well have it match.
  */
 #define PAGE_SHIFT	12

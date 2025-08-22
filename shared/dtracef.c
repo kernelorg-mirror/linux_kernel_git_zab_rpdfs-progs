@@ -64,14 +64,14 @@ bool dtracef_enabled = false;
  * expensive than a raw rdtsc, which seems worth it to get portable
  * realtime timestamps.
  */
-struct ngnfs_dtracef_event *dtracef_get_event(struct dtracef_site *site)
+struct rpdfs_dtracef_event *dtracef_get_event(struct dtracef_site *site)
 {
 	struct dtracef_instance *inst = &global_dtracef_inst;
-	size_t size = offsetof(struct ngnfs_dtracef_event, args[site->nr_args]);
-	struct ngnfs_dtracef_event *ev;
+	size_t size = offsetof(struct rpdfs_dtracef_event, args[site->nr_args]);
+	struct rpdfs_dtracef_event *ev;
 	size_t remaining;
 
-	remaining = NGNFS_DTRACEF_SEGMENT - (inst->pos % NGNFS_DTRACEF_SEGMENT);
+	remaining = RPDFS_DTRACEF_SEGMENT - (inst->pos % RPDFS_DTRACEF_SEGMENT);
 	if (size + sizeof(ev->args[0]) > remaining)
 		inst->pos += remaining;
 
@@ -89,16 +89,16 @@ struct ngnfs_dtracef_event *dtracef_get_event(struct dtracef_site *site)
 	return ev;
 }
 
-static size_t source_size(struct ngnfs_dtracef_source *source)
+static size_t source_size(struct rpdfs_dtracef_source *source)
 {
-	return roundup(offsetof(struct ngnfs_dtracef_source, strings) +
+	return roundup(offsetof(struct rpdfs_dtracef_source, strings) +
 		       le16_to_cpu(source->name_size) + le16_to_cpu(source->fmt_size),
-		       NGNFS_DTRACE_SOURCE_ALIGN);
+		       RPDFS_DTRACE_SOURCE_ALIGN);
 }
 
 static size_t max_source_size(void)
 {
-	struct ngnfs_dtracef_source source = {
+	struct rpdfs_dtracef_source source = {
 		.name_size = cpu_to_le16(U16_MAX),
 		.fmt_size = cpu_to_le16(U16_MAX),
 	};
@@ -106,12 +106,12 @@ static size_t max_source_size(void)
 	return source_size(&source);
 }
 
-static char *source_name(struct ngnfs_dtracef_source *source)
+static char *source_name(struct rpdfs_dtracef_source *source)
 {
 	return (char *)source->strings;
 }
 
-static char *source_fmt(struct ngnfs_dtracef_source *source)
+static char *source_fmt(struct rpdfs_dtracef_source *source)
 {
 	return source_name(source) + le16_to_cpu(source->name_size);
 }
@@ -172,7 +172,7 @@ static int print_one(char *fmt, int argtype, u64 arg)
  * have one format and one argument so that we can feasibly reconstruct
  * the vararg argument for each format.
  */
-static int print_event(struct ngnfs_dtracef_source *source, struct ngnfs_dtracef_event *ev)
+static int print_event(struct rpdfs_dtracef_source *source, struct rpdfs_dtracef_event *ev)
 {
 	struct timespec ts;
 	char *str = NULL;
@@ -241,13 +241,13 @@ out:
  */
 static loff_t find_oldest(void *addr, size_t size)
 {
-	struct ngnfs_dtracef_event *ev;
-	struct ngnfs_dtracef_event *end;
+	struct rpdfs_dtracef_event *ev;
+	struct rpdfs_dtracef_event *end;
 	u64 oldest;
 	u64 off;
 
 	ev = addr;
-	end = addr + rounddown(size, sizeof(struct ngnfs_dtracef_event));
+	end = addr + rounddown(size, sizeof(struct rpdfs_dtracef_event));
 	oldest = le64_to_cpu(ev->realtime_ns);
 	off = 0;
 
@@ -261,7 +261,7 @@ static loff_t find_oldest(void *addr, size_t size)
 			break;
 		}
 
-		ev = (void *)ev + NGNFS_DTRACEF_SEGMENT;
+		ev = (void *)ev + RPDFS_DTRACEF_SEGMENT;
 	}
 
 	return off;
@@ -269,10 +269,10 @@ static loff_t find_oldest(void *addr, size_t size)
 
 int dtracef_print_trace_mem(void *addr, size_t size)
 {
-	struct ngnfs_dtracef_source **sources = NULL;
-	struct ngnfs_dtracef_source *source;
-	struct ngnfs_dtracef_file *fil;
-	struct ngnfs_dtracef_event *ev;
+	struct rpdfs_dtracef_source **sources = NULL;
+	struct rpdfs_dtracef_source *source;
+	struct rpdfs_dtracef_file *fil;
+	struct rpdfs_dtracef_event *ev;
 	void *ring_addr;
 	size_t ring_size;
 	size_t start;
@@ -282,13 +282,13 @@ int dtracef_print_trace_mem(void *addr, size_t size)
 	int ret;
 	int i;
 
-	if (size < sizeof(struct ngnfs_dtracef_file)) {
+	if (size < sizeof(struct rpdfs_dtracef_file)) {
 		ret = -EINVAL;
 		goto out;
 	}
 
 	fil = addr;
-	if (le64_to_cpu(fil->magic) != NGNFS_DTRACEF_FILE_MAGIC) {
+	if (le64_to_cpu(fil->magic) != RPDFS_DTRACEF_FILE_MAGIC) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -304,7 +304,7 @@ int dtracef_print_trace_mem(void *addr, size_t size)
 	source = (void *)(fil + 1);
 	for (i = 1; i < nr_sources; i++) {
 
-		if (((void *)source + sizeof(struct ngnfs_dtracef_source)) > (addr + size) ||
+		if (((void *)source + sizeof(struct rpdfs_dtracef_source)) > (addr + size) ||
 		    ((void *)source + source_size(source)) > (addr + size)) {
 			ret = -EINVAL;
 			goto out;
@@ -314,7 +314,7 @@ int dtracef_print_trace_mem(void *addr, size_t size)
 		nr = le16_to_cpu(source->nr);
 		if (le16_to_cpu(source->name_size) < 2 ||
 		    le16_to_cpu(source->fmt_size) < 2 ||
-		    le16_to_cpu(source->nr_args) > NGNFS_DTRACEF_MAX_ARGS ||
+		    le16_to_cpu(source->nr_args) > RPDFS_DTRACEF_MAX_ARGS ||
 		    (nr >= nr_sources || sources[nr])) {
 			ret = -EINVAL;
 			goto out;
@@ -344,7 +344,7 @@ int dtracef_print_trace_mem(void *addr, size_t size)
 
 		ev = ring_addr + pos;
 		if (ev->nr == 0) {
-			pos = roundup(pos + 1, NGNFS_DTRACEF_SEGMENT);
+			pos = roundup(pos + 1, RPDFS_DTRACEF_SEGMENT);
 			continue;
 		}
 
@@ -356,7 +356,7 @@ int dtracef_print_trace_mem(void *addr, size_t size)
 		source = sources[le64_to_cpu(ev->nr)];
 		ret = print_event(source, ev);
 
-		pos += offsetof(struct ngnfs_dtracef_event, args[le16_to_cpu(source->nr_args)]);
+		pos += offsetof(struct rpdfs_dtracef_event, args[le16_to_cpu(source->nr_args)]);
 
 	} while (pos != start);
 
@@ -369,7 +369,7 @@ out:
 
 static const char *check_format(char *fmt)
 {
-	static int argtypes[NGNFS_DTRACEF_MAX_ARGS];
+	static int argtypes[RPDFS_DTRACEF_MAX_ARGS];
 	size_t len;
 	size_t nr;
 	size_t n;
@@ -387,8 +387,8 @@ static const char *check_format(char *fmt)
 	nr = parse_printf_format(fmt, ARRAY_SIZE(argtypes), argtypes);
 	if (nr == 0)
 		return "contains no format specification";
-	if (nr > NGNFS_DTRACEF_MAX_ARGS)
-		return "contains more than " __stringify(NGNFS_DTRACEF_MAX_ARGS) " format specifications";
+	if (nr > RPDFS_DTRACEF_MAX_ARGS)
+		return "contains more than " __stringify(RPDFS_DTRACEF_MAX_ARGS) " format specifications";
 
 	/* can't have formats with multiple args, like '%*' */
 	n = count_specs(fmt);
@@ -417,8 +417,8 @@ static const char *check_format(char *fmt)
 int dtracef_init(char *path)
 {
 	struct dtracef_instance *inst = &global_dtracef_inst;
-	struct ngnfs_dtracef_source *source;
-	struct ngnfs_dtracef_file *fil;
+	struct rpdfs_dtracef_source *source;
+	struct rpdfs_dtracef_file *fil;
 	struct dtracef_site *site;
 	const char *msg;
 	void *addr = NULL;
@@ -458,12 +458,12 @@ int dtracef_init(char *path)
 	}
 
 	fil = buf;
-	fil->magic = cpu_to_le64(NGNFS_DTRACEF_FILE_MAGIC);
+	fil->magic = cpu_to_le64(RPDFS_DTRACEF_FILE_MAGIC);
 	fil->size = 0;
 	memset_zero_sizeof(fil->pad_);
 	fil->nr_sources = cpu_to_le16(inst->next_nr);
 
-	file_size = sizeof(struct ngnfs_dtracef_file);
+	file_size = sizeof(struct rpdfs_dtracef_file);
 	ret = write(fd, fil, file_size);
 	if (ret != file_size) {
 		if (ret >= 0)
@@ -485,7 +485,7 @@ int dtracef_init(char *path)
 		source->nr_args = cpu_to_le16(site->nr_args);
 
 		/* cheeky zeroing of potential final padding before overwriting with strings */
-		sz = min(NGNFS_DTRACE_SOURCE_ALIGN - 1, name_size + fmt_size);
+		sz = min(RPDFS_DTRACE_SOURCE_ALIGN - 1, name_size + fmt_size);
 		memset((void *)source + source_size(source) - sz, 0, sz);
 
 		memcpy(source->strings, site->name, name_size);

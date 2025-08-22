@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_FORMAT_MSG_H
-#define NGNFS_SHARED_FORMAT_MSG_H
+#ifndef RPDFS_SHARED_FORMAT_MSG_H
+#define RPDFS_SHARED_FORMAT_MSG_H
 
 #include <linux/types.h>
 
@@ -8,21 +8,21 @@
 #include "shared/lk/types.h"
 
 enum {
-	NGNFS_MSG_BLOCK_READ = 0,
-	NGNFS_MSG_BLOCK_READ_RESULT,
-	NGNFS_MSG_BLOCK_WRITE,
-	NGNFS_MSG_BLOCK_WRITE_RESULT,
-	NGNFS_MSG_BLOCK_MODE_SET,
-	NGNFS_MSG_BLOCK_MODE_ACK,
-	NGNFS_MSG__NR,
+	RPDFS_MSG_BLOCK_READ = 0,
+	RPDFS_MSG_BLOCK_READ_RESULT,
+	RPDFS_MSG_BLOCK_WRITE,
+	RPDFS_MSG_BLOCK_WRITE_RESULT,
+	RPDFS_MSG_BLOCK_MODE_SET,
+	RPDFS_MSG_BLOCK_MODE_ACK,
+	RPDFS_MSG__NR,
 };
 
 enum {
-	NGNFS_MSG_ERR_OK = 0,
-	NGNFS_MSG_ERR_UNKNOWN,
-	NGNFS_MSG_ERR_EIO,
-	NGNFS_MSG_ERR_ENOMEM,
-	NGNFS_MSG_ERR__INVALID,
+	RPDFS_MSG_ERR_OK = 0,
+	RPDFS_MSG_ERR_UNKNOWN,
+	RPDFS_MSG_ERR_EIO,
+	RPDFS_MSG_ERR_ENOMEM,
+	RPDFS_MSG_ERR__INVALID,
 };
 
 /*
@@ -35,52 +35,52 @@ enum {
  * write is compatible with nothing.
  */
 enum {
-	NGNFS_CACHE_MODE_NULL = 0,
-	NGNFS_CACHE_MODE_NONE,
-	NGNFS_CACHE_MODE_READ,
-	NGNFS_CACHE_MODE_WRITE,
-	NGNFS_CACHE_MODE__INVALID,
+	RPDFS_CACHE_MODE_NULL = 0,
+	RPDFS_CACHE_MODE_NONE,
+	RPDFS_CACHE_MODE_READ,
+	RPDFS_CACHE_MODE_WRITE,
+	RPDFS_CACHE_MODE__INVALID,
 };
 
-struct ngnfs_msg_header {
+struct rpdfs_msg_header {
 	__le32 crc;
 	__le16 data_size;
 	__u8 ctl_size;
 	__u8 type;
 };
 
-#define NGNFS_MSG_MAX_CTL_SIZE	255
-#define NGNFS_MSG_MAX_DATA_SIZE 4096
+#define RPDFS_MSG_MAX_CTL_SIZE	255
+#define RPDFS_MSG_MAX_DATA_SIZE 4096
 
-struct ngnfs_msg_block_read {
+struct rpdfs_msg_block_read {
 	__le64 bnr;
 	__le64 flags;
 	__u8 mode;
 	__u8 _pad[7];
 };
 
-struct ngnfs_msg_block_read_result {
+struct rpdfs_msg_block_read_result {
 	__le64 bnr;
 	__u8 mode;
 	__u8 err;
 	__u8 _pad[6];
 };
 
-#define NGNFS_MSG_BLOCK_READ_FLAG_NO_DATA	(1 << 0)
+#define RPDFS_MSG_BLOCK_READ_FLAG_NO_DATA	(1 << 0)
 
-struct ngnfs_msg_block_write {
+struct rpdfs_msg_block_write {
 	__le64 bnr;
 	__u8 mode;
 	__u8 _pad[7];
 };
 
-struct ngnfs_msg_block_write_result {
+struct rpdfs_msg_block_write_result {
 	__le64 bnr;
 	__u8 err;
 	__u8 _pad[7];
 };
 
-struct ngnfs_msg_cache_mode {
+struct rpdfs_msg_cache_mode {
 	__le64 bnr;
 	__u8 mode;
 	__u8 _pad[7];

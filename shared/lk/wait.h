@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-#ifndef NGNFS_SHARED_LK_WAIT_H
-#define NGNFS_SHARED_LK_WAIT_H
+#ifndef RPDFS_SHARED_LK_WAIT_H
+#define RPDFS_SHARED_LK_WAIT_H
 
 /*
  * So far we've only needed the basic

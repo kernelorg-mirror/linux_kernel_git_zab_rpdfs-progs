@@ -15,17 +15,13 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 
-#include "shared/block.h"
 #include "shared/dtracef.h"
 #include "shared/lk/err.h"
 #include "shared/lk/kernel.h"
 #include "shared/log.h"
-#include "shared/msg.h"
-#include "shared/mtr-socket.h"
 #include "shared/nerr.h"
 #include "shared/options.h"
 #include "shared/parse.h"
-#include "shared/thread.h"
 
 #include "utask/block.h"
 #include "utask/net.h"

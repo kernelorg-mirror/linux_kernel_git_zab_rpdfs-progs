@@ -6,8 +6,6 @@
 
 #include "shared/lk/slab.h"
 
-#include "shared/urcu.h"
-
 /*
  * As a userspace implementation without hardware constraints, this
  * becomes an arbitrary choice of convenience.  rpdfs uses a 4k block
@@ -33,7 +31,7 @@ static inline struct page *alloc_page(gfp_t gfp_mask)
 			free(page);
 			page = NULL;
 		} else {
-			uatomic_set(&page->refcount, 1);
+			page->refcount = 1;
 			if (gfp_mask && __GFP_ZERO)
 				memset(page->buf, 0, PAGE_SIZE);
 		}
@@ -44,12 +42,12 @@ static inline struct page *alloc_page(gfp_t gfp_mask)
 
 static inline void get_page(struct page *page)
 {
-	uatomic_inc(&page->refcount);
+	page->refcount++;
 }
 
 static inline void put_page(struct page *page)
 {
-	if (uatomic_sub_return(&page->refcount, -1) == 0) {
+	if (--page->refcount == 0) {
 		free(page->buf);
 		free(page);
 	}
@@ -64,7 +62,7 @@ static inline void *page_address(struct page *page)
 
 static inline int page_ref_count(struct page *page)
 {
-	return uatomic_read(&page->refcount);
+	return page->refcount;
 }
 
 #endif

@@ -11,7 +11,7 @@ CFLAGS += -pg
 # produce .i and .s
 CFLAGS += -save-temps
 
-LDFLAGS := -Wl,--gc-sections -lurcu-common -lurcu -lurcu-cds -lxxhash -luring -luuid
+LDFLAGS := -Wl,--gc-sections -lxxhash -luring -luuid
 
 # provide dynamic symbol tables for backtrace()
 LDFLAGS += -rdynamic
@@ -21,19 +21,11 @@ DIR := cli devd shared shared/lk utask
 SRC := $(foreach d,$(DIR),$(wildcard $(d)/*.c))
 OBJ := $(patsubst %.c,%.o,$(SRC))
 DEP := $(foreach d,$(DIR),$(wildcard $(d)/*.d))
-DGH := shared/generated-trace-inlines.h
 SRC_S := $(foreach d,$(DIR),$(wildcard $(d)/*.S))
 OBJ_S := $(patsubst %.S,%.o,$(SRC_S))
 
 # source with main() is linked as a binary
 BIN := $(patsubst %.c,%,$(shell grep -l "^int main" $(SRC)))
-
-# make a static library out of everything in shared
-LIB := lib/librpdfs.a
-LIB_DIR := shared shared/lk
-LIB_SRC := $(foreach d,$(LIB_DIR),$(wildcard $(d)/*.c))
-LIB_OBJ := $(patsubst %.c,%.o,$(LIB_SRC))
-LIB_DEP := $(foreach d,$(LIB_DIR),$(wildcard $(d)/*.d))
 
 #
 # check persistent fixed header structs for internal padding with
@@ -48,7 +40,7 @@ PADCHECK := $(patsubst %.h,%.o.padcheck,$(wildcard shared/format-*.h))
 GEN_BIN := $(patsubst %.c,%,$(wildcard shared/lk/gen/*.c))
 
 .PHONY: all
-all: $(PADCHECK) $(GEN_BIN) $(BIN) $(DGH) $(LIB)
+all: $(PADCHECK) $(GEN_BIN) $(BIN)
 
 ifneq ($(DEP),)
 -include $(DEP)
@@ -66,7 +58,7 @@ $(BIN): %: %.o 	$$(filter $$(dir %)$$(PERCENT),$$(OBJ)) \
 $(GEN_BIN): %: %.c
 	gcc $(LDFLAGS) -o $@ $<
 
-%.o %.d: %.c $(DGH)
+%.o %.d: %.c
 	gcc $(CFLAGS) -MD -MP -MF $*.d -c $< -o $*.o
 	./scripts/sparse.sh -Wbitwise -D__CHECKER__ $(CFLAGS) $<
 
@@ -88,9 +80,6 @@ utask/utask_gen_defs.h: utask/utask.s
 $(PADCHECK): %.o.padcheck: %.h
 	gcc $(CFLAGS) -Wpadded -c $< -o $@
 
-$(DGH): scripts/generate-trace-events.awk shared/trace-events.txt
-	gawk -f $< < shared/trace-events.txt > $@
-
 shared/lk/crc64table.h: shared/lk/gen/gen_crc64table
 	$^ > $@
 
@@ -100,7 +89,7 @@ $(LIB): $(LIB_OBJ)
 
 .PHONY: clean
 clean:
-	@rm -f $(BIN) $(OBJ) $(OBJ_S) $(DEP) $(PADCHECK) $(GEN_BIN) $(DGH) $(LIB)\
+	@rm -f $(BIN) $(OBJ) $(OBJ_S) $(DEP) $(PADCHECK) $(GEN_BIN) \
 		$(foreach d,$(DIR),$(wildcard $(d)/*.[is])) \
 		utask/utask_gen_defs.h \
 		.sparse.gcc-defines.h .sparse.output

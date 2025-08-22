@@ -7,8 +7,6 @@
 
 #include "shared/lk/list.h"
 #include "shared/log.h"
-#include "shared/thread.h"
-#include "shared/trace.h"
 
 #include "cli.h"
 

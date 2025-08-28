@@ -19,9 +19,8 @@ u8 rpdfs_msg_err(int eno)
 
 	switch (abs(eno)) {
 		case 0: return RPDFS_MSG_ERR_OK;
-		err_case(EIO)
 		err_case(ENOMEM)
-		default: return RPDFS_MSG_ERR_UNKNOWN;
+		default: err_case(EIO)
 	}
 }
 
@@ -38,7 +37,6 @@ int rpdfs_msg_errno(u8 err)
 
 	switch (err) {
 		case RPDFS_MSG_ERR_OK:			return 0;
-		case RPDFS_MSG_ERR_UNKNOWN:		return -EIO;
 		case RPDFS_MSG_ERR__INVALID ... U8_MAX:	return -EPROTO;
 		default:				return -eno[err];
 	}

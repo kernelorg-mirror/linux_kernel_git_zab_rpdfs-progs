@@ -7,11 +7,13 @@
 #include <fcntl.h>
 
 #include "shared/lk/byteorder.h"
-#include "shared/lk/rbtree.h"
+#include "shared/lk/minmax.h"
 
 #include "shared/compare.h"
 #include "shared/format-block.h"
+#include "shared/format-dev.h"
 #include "shared/format-msg.h"
+#include "shared/hash_table.h"
 #include "shared/msg.h"
 #include "shared/string_wrappers.h"
 
@@ -25,462 +27,514 @@
  * This governs the cached block modes that clients are allowed in their
  * caches across the network.
  *
+ * The protocol and this implementation's state machine are built around
+ * relatively simplified functionality.  Each block's state is fully
+ * independent of others.  The client can only request increased cache
+ * mode levels (none->read->write).  The server grants those requests
+ * and can also send unsolicited strictly decreasing revokes of
+ * previously granted modes.  The client won't request a lesser mode,
+ * and the server won't increase the mode without a request.  This
+ * simplifies the conditions that the client and server have to
+ * implement.
+ *
+ * We then reduce round trips by combining the request for a cache mode
+ * with a read of the block contents.  The client only sends a read
+ * message when it needs the block contents, and it can further include
+ * in that message that it is requesting a higher mode.  The server
+ * always responds to read with block data, perhaps only metadata, and
+ * can optionally be granting a mode.
+ *
+ * Write commands have a similar bundling, but there the write can
+ * optionally also be acknowledging a message from the server to revoke
+ * its write mode.  The server processes the acked mode only if the
+ * write succeeds.
+ *
+ * Through all this, we're requiring in-order messaging to ensure that
+ * back-to-back sends don't end up processed out of order on the
+ * receiver.  This avoids round-trips to serialize the two messages or
+ * managing windows of out-of-order received messages to be processed
+ * once their sequence is resolved.
+ *
  * A core challenge here is that the amount of memory we're willing to
  * spend tracking the mode of cached blocks limits the cache size of the
  * clients.  We want our tracking to be as dense as possible to make the
  * most of our memory resource and allow the largest caches in clients.
- *
- * This basic version just demonstrates the work flow, it totally
- * ignores memory consumption.  There's a lot of possibilities for
- * decreasing memory use and we need a baseline to measure from.
- *
- * The network protocol errs on the side of being overly chatty to
- * simplify the coordinated state transitions between this server and
- * the clients.  We can only have one sent mode in flight, and we won't
- * send another until we receive an ack.  This adds round trips to a few
- * exchanges, but means that the client can never receive confusing
- * messages that are sent concurrently can get re-ordered in flight.  We
- * could loosen this up but it'd need to be done very carefully and
- * makes either end need to deal with more possible transition
- * combinations.
  */
 
 static struct cache_mode_instance {
-	struct rb_root cli_root;
-
+	struct hash_table *ht;
 } global_cache_mode_inst = {
-	.cli_root = RB_ROOT,
 };
 
 /*
- * @mode is the active mode that we must assume the client is currently
- * operating under.  There's assymetry as we set a more restrictive mode
- * immediately as it is sent to the client, but don't drop to a less
- * restrictive mode until we receive the ack from the client.
- *
- * @request is the next mode that will be set on the mode.  It is
- * primarily set by incoming requests from the client, but we can
- * request a mode of none to shrink caches.
- *
- * @sent is the mode that is in flight to the client.  We only allow one
- * mode in flight to simplify the protocol and allow us to aggressively
- * verify state transitions.
- *
- * @processing is set for the next request amongst the modes for a given
- * block that we're actively working towards.
+ * This is built to conserve space by having a small dense client id.
+ * Today the net layer uses full addresses so the client_state struct is
+ * a lot bigger than it would otherwise be.  This can be updated as we
+ * add maps and the infrastructure for changing ids over time.
  */
-struct client_mode {
-	struct rb_node node;
-	struct sockaddr_in addr;
+struct block_state {
 	u64 bnr;
-	u8 mode;
-	u8 request;
-	u8 sent;
-	u8 processing:1,
-	   no_data:1;
+	u16 size;
+	u16 request_index;
+	u16 reading:1;
+	struct client_state {
+		struct sockaddr_in addr;
+		u8 request:RPDFS_CACHE_MODE__BITS,
+		    grant:RPDFS_CACHE_MODE__BITS,
+		    revoke:RPDFS_CACHE_MODE__BITS,
+		    is_read:1,
+		    read_data:1;
+	} clients[0];
 };
 
 /*
- * Returns true if the two modes can be granted to different clients.
- * It's always true as long as neither mode is a write.
+ * Iterate over all the present clients in the client array.
  */
-static inline bool compatible_modes(u8 a, u8 b)
+#define for_each_client(cli_, bst_) \
+	for(cli_ = &(bst_)->clients[0]; cli_ < &(bst_)->clients[(bst_)->size]; cli_++)
+
+/* this is clamped to the array size so iterators can wrap with (cli + 1) */
+static inline unsigned long cli_index(struct block_state *bst, struct client_state *cli)
 {
-	return a != RPDFS_CACHE_MODE_WRITE && b != RPDFS_CACHE_MODE_WRITE;
+	return (cli - bst->clients) % bst->size;
 }
 
 /*
- * Returns the least restrictive mode that's compatible with a requested
- * mode.  Only really serves to downgrade conflicting writes to reads
- * when a read is requested.
+ * Iterate over all the clients, starting at a given (wrapped) index,
+ * visiting each once.
  */
-static inline u8 most_compatible(u8 request)
+#define for_each_client_from(cli_, bst_, ind_) \
+	for(cli_ = &(bst_)->clients[((ind_) % bst->size)]; \
+	    cli_ != NULL; \
+	    cli_ = (cli_index((bst_), cli_ + 1) == ((ind_) % bst->size)) ? NULL : \
+			&(bst_)->clients[cli_index((bst_), cli_ + 1)])
+
+/*
+ * Returns true if the two modes can both be granted to different
+ * clients.  Only false for write with either read or write.  A static
+ * word with bits set for the compatible combinations is clear and fast.
+ */
+static inline unsigned int compatible_modes(u8 a, u8 b)
 {
-	return request == RPDFS_CACHE_MODE_WRITE ? RPDFS_CACHE_MODE_NONE : RPDFS_CACHE_MODE_READ;
-}
+#define CB__(a, b) (1U << ((a << RPDFS_CACHE_MODE__BITS) | b))
+	const static unsigned int compat_bits =
+		CB__(RPDFS_CACHE_MODE_NULL, RPDFS_CACHE_MODE_NULL) |
+		CB__(RPDFS_CACHE_MODE_NULL, RPDFS_CACHE_MODE_NONE) |
+		CB__(RPDFS_CACHE_MODE_NULL, RPDFS_CACHE_MODE_READ) |
+		CB__(RPDFS_CACHE_MODE_NULL, RPDFS_CACHE_MODE_WRITE) |
+		CB__(RPDFS_CACHE_MODE_NONE, RPDFS_CACHE_MODE_NULL) |
+		CB__(RPDFS_CACHE_MODE_NONE, RPDFS_CACHE_MODE_NONE) |
+		CB__(RPDFS_CACHE_MODE_NONE, RPDFS_CACHE_MODE_READ) |
+		CB__(RPDFS_CACHE_MODE_NONE, RPDFS_CACHE_MODE_WRITE) |
+		CB__(RPDFS_CACHE_MODE_READ, RPDFS_CACHE_MODE_NULL) |
+		CB__(RPDFS_CACHE_MODE_READ, RPDFS_CACHE_MODE_NONE) |
+		CB__(RPDFS_CACHE_MODE_READ, RPDFS_CACHE_MODE_READ) |
+		/* not (READ, WRITE) */
+		CB__(RPDFS_CACHE_MODE_WRITE, RPDFS_CACHE_MODE_NULL) |
+		CB__(RPDFS_CACHE_MODE_WRITE, RPDFS_CACHE_MODE_NONE);
+		/* not (WRITE, READ) */
+		/* not (WRITE, WRITE) */
 
-static inline struct client_mode *cli_container(struct rb_node *node)
-{
-	return node ? container_of(node, struct client_mode, node) : NULL;
-}
-
-static inline struct client_mode *next_cli(struct client_mode *cli)
-{
-	return cli ? cli_container(rb_next(&cli->node)) : NULL;
-}
-
-static inline struct client_mode *prev_cli(struct client_mode *cli)
-{
-	return cli ? cli_container(rb_prev(&cli->node)) : NULL;
-}
-
-static inline struct client_mode *next_cli_bnr(struct client_mode *cli)
-{
-	struct client_mode *tmp = next_cli(cli);
-
-	return (tmp && tmp->bnr == cli->bnr) ? tmp : NULL;
-}
-
-static inline struct client_mode *prev_cli_bnr(struct client_mode *cli)
-{
-	struct client_mode *tmp = prev_cli(cli);
-
-	return (tmp && tmp->bnr == cli->bnr) ? tmp : NULL;
-}
-
-static inline struct client_mode *first_cli_bnr(struct client_mode *cli)
-{
-	struct client_mode *tmp;
-
-	while (cli && (tmp = prev_cli_bnr(cli)))
-		cli = tmp;
-
-	return cli;
+	return compat_bits & CB__(a, b);
+#undef CB__
 }
 
 /*
- * Iterate over every client mode for the starting from's bnr.  From is
- * only used to start iteration.  Only cli can be removed from the tree
- * in a given execution of the loop body.  cli is set to null if
- * iteration completes.
+ * Returns the least restrictive mode that's compatible with the mode
+ * mode.  Only really serves to downgrade conflicting writes to reads.
  */
-#define for_each_cli_bnr(cli, tmp, from)		\
-	for (cli = first_cli_bnr(from);			\
-	     cli && ((tmp = next_cli_bnr(cli)), 1);	\
-	     cli = tmp)
-
-enum {
-	GCM_ALLOC = (1 << 0),	/* allocate new cli if none found */
-	GCM_NEXT = (1 << 1)	/* return next client within block */
-};
-static struct client_mode *get_client_mode(struct cache_mode_instance *inst, u64 bnr,
-					   struct sockaddr_in *addr, int gcm)
+static inline u8 most_compatible(u8 mode)
 {
-	struct rb_node **node = &inst->cli_root.rb_node;
-	struct rb_node *parent = NULL;
-	struct client_mode *next = NULL;
-	struct client_mode *cli = NULL;
-	int cmp;
+	return mode == RPDFS_CACHE_MODE_WRITE ? RPDFS_CACHE_MODE_NONE : RPDFS_CACHE_MODE_READ;
+}
 
-	while (*node) {
-		parent = *node;
-		cli = container_of(*node, struct client_mode, node);
-		cmp = rpdfs_compare(bnr, cli->bnr) ?:
-		      rpdfs_compare(ntohl(addr->sin_addr.s_addr),
-				    ntohl(cli->addr.sin_addr.s_addr)) ?:
-		      rpdfs_compare(ntohs(addr->sin_port), ntohs(cli->addr.sin_port));
+static bool cli_is_none(struct client_state *cli)
+{
+	return cli->request <= RPDFS_CACHE_MODE_NONE &&
+	       cli->grant <= RPDFS_CACHE_MODE_NONE &&
+	       cli->revoke <= RPDFS_CACHE_MODE_NONE;
+}
 
-		if (cmp < 0) {
-			if (cli->bnr == bnr)
-				next = cli;
-			node = &(*node)->rb_left;
-		} else if (cmp > 0) {
-			node = &(*node)->rb_right;
-		} else {
-			return cli;
+/*
+ * As we put the block state we remove any clients that no longer track
+ * information and realloc the array to reclaim memory.
+ */ 
+static void put_block_state(struct cache_mode_instance *inst, struct block_state *bst)
+{
+	struct client_state *last;
+	struct client_state *cli;
+	bool shrank = false;
+	void *re;
+
+	if (!bst || bst->reading)
+		return;
+
+	for_each_client(cli, bst) {
+		if (cli_is_none(cli)) {
+			last = &bst->clients[bst->size - 1];
+			if (cli != last) {
+				*cli = *last;
+				if (bst->request_index == cli_index(bst, last))
+					bst->request_index = cli_index(bst, cli);
+			}
+			bst->size--;
+			cli--;
+			shrank = true;
+		}
+	}
+
+	if (bst->size == 0) {
+		htable_delete(inst->ht, bst->bnr);
+		free(bst);
+
+	} else if (shrank) {
+		re = realloc(bst, offsetof(struct block_state, clients[bst->size]));
+		if (re) {
+			bst = re;
+			htable_insert(inst->ht, bst->bnr, (u64)bst);
+		}
+	}
+}
+
+static bool addrs_equal(struct sockaddr_in *a, struct sockaddr_in *b)
+{
+	return a->sin_addr.s_addr == b->sin_addr.s_addr &&
+	       a->sin_port == b->sin_port &&
+	       a->sin_family == b->sin_family;
+}
+
+/*
+ * We're relying on the allocator to manage fragmentation of precise
+ * allocation.  This lets us put off maintaining our own utilization
+ * inside a fixed size pool, which we will probably have to do
+ * eventually.  For now burn cpu to realloc the block state with its
+ * array each time its size changes.  This is the growth side, put_
+ * shrinks.
+ */
+static int get_block_client(struct cache_mode_instance *inst, u64 bnr, struct sockaddr_in *addr,
+			    struct block_state **bst_ret, struct client_state **cli_ret)
+{
+	struct block_state *bst = NULL;
+	struct client_state *cli = NULL;
+	void *re;
+	int ret;
+
+	bst = (struct block_state *)htable_lookup(inst->ht, bnr);
+	if (!bst) {
+		bst = malloc(offsetof(struct block_state, clients[1]));
+		if (!bst) {
+			ret = -ENOMEM;
+			goto out;
 		}
 
+		bst->bnr = bnr;
+		bst->size = 1;
+		bst->request_index = 0;
+		bst->reading = 0;
+		htable_insert(inst->ht, bst->bnr, (u64)bst);
+
+		cli = &bst->clients[0];
+		goto init_cli;
+	}
+
+	for_each_client(cli, bst) {
+		if (addrs_equal(&cli->addr, addr)) {
+			ret = 0;
+			goto out;
+		}
+	}
+
+	re = realloc(bst, offsetof(struct block_state, clients[bst->size + 1]));
+	if (!re) {
+		ret = -errno;
+		goto out;
+	}
+	bst = re;
+
+	htable_insert(inst->ht, bst->bnr, (u64)bst);
+	cli = &bst->clients[bst->size++];
+init_cli:
+	*cli = (struct client_state) {
+		.addr = *addr,
+	};
+
+	ret = 0;
+out:
+	if (ret < 0) {
+		put_block_state(inst, bst);
+		bst = NULL;
 		cli = NULL;
 	}
 
-	if (!cli && (gcm & GCM_NEXT))
-		cli = next;
-
-	if (!cli && (gcm & GCM_ALLOC)) {
-		cli = calloc(1, sizeof(struct client_mode));
-		if (cli) {
-			cli->bnr = bnr;
-			cli->addr = *addr;
-
-			rb_link_node(&cli->node, parent, node);
-			rb_insert_color(&cli->node, &inst->cli_root);
-		}
-	}
-
-	return cli;
-}
-
-static void free_client_mode(struct cache_mode_instance *inst, struct client_mode *cli)
-{
-	rb_erase(&cli->node, &inst->cli_root);
-	free(cli);
-}
-
-/*
- * Return the next client request to be processed.  If there isn't one
- * already marked then we select one at random from the conversion or
- * new request fifos in the array.
- */
-static struct client_mode *find_processing_request(struct cache_mode_instance *inst, u64 bnr)
-{
-	struct client_mode *candidate = NULL;
-	struct sockaddr_in addr = { };
-	struct client_mode *start;
-	struct client_mode *cli;
-	struct client_mode *tmp;
-
-	start = get_client_mode(inst, bnr, &addr, GCM_NEXT);
-	if (!start)
-		return NULL;
-
-	for_each_cli_bnr(cli, tmp, start) {
-		if (cli->processing)
-			return cli;
-
-		if (!candidate && cli->request && !cli->sent)
-			candidate = cli;
-	}
-
-	if (candidate) {
-		candidate->processing = 1;
-		return candidate;
-	}
-
-	return NULL;
-}
-
-/*
- * The interface between components gets a little tricky here.  We've
- * extended block IO messages to include cache mode communication.  The
- * easy case to imagine is a client wanting to modify a block,
- * requesting the block contents and a write mode, and being granted
- * both.
- *
- * The more irritating flow is a client with a read mode requesting a
- * write.  It sends the write request.  But that can race with us
- * removing that client's read mode on behalf of a different client's
- * write mode.  After that's resolved, and we come back to sending the
- * write mode to the first client, it won't have the current block
- * contents anymore.  We can see that here and decide to send them the
- * current block contents along with the granted write mode.
- *
- * The end result is that utasks processing requests for a given block
- * can schedule to get block contents when sending a mode to a client.
- * It's a little surprising, but works out because the processing for a
- * given block is inherently tied up in its cached state.
- */
-static int send_read_result(struct client_mode *cli, u64 bnr, u8 old_mode, u8 mode)
-{
-	struct rpdfs_msg_block_read_result rr;
-	struct cached_block *cblk = NULL;
-	struct page *data_page = NULL;
-	struct rpdfs_msg_header hdr;
-	int ret;
-	int err;
-
-	/* default to sending only the mode */
-	rr.bnr = cpu_to_le64(bnr);
-	rr.mode = mode;
-	rr.err = 0;
-	memset_zero_sizeof(rr._pad);
-
-	hdr.data_size = 0;
-	hdr.ctl_size = sizeof(rr);
-	hdr.type = RPDFS_MSG_BLOCK_READ_RESULT;
-	data_page = NULL;
-
-	if (old_mode == RPDFS_CACHE_MODE_NONE && mode != RPDFS_CACHE_MODE_NONE && !cli->no_data) {
-
-		err = bstore_read(bnr, &cblk);
-		if (err < 0) {
-			/* send error on read io error */
-			rr.mode = RPDFS_CACHE_MODE_NULL;
-			rr.err = rpdfs_msg_err(err);
-		} else {
-			/* and include block data if they need it */
-			hdr.data_size = cpu_to_le16(RPDFS_BLOCK_SIZE);
-			data_page = block_data_page(cblk);
-		}
-	}
-
-	ret = net_send(&cli->addr, &hdr, &rr, data_page);
-
-	block_put(cblk);
+	*bst_ret = bst;
+	*cli_ret = cli;
 
 	return ret;
 }
 
 /*
- * Send an unsolicited command to a client to set its mode to be
- * compatible with a conflicting mode that's being requested by another
- * client.
+ * We don't spend the memory on strict fifo processing of requests.  We
+ * try to process in round-robin order.  We will process a given request
+ * until it is resolved before moving on to the next one.
  */
-static int send_mode_set(struct client_mode *cli, u64 bnr, u8 old_mode, u8 mode)
+static struct client_state *find_request(struct block_state *bst)
+{
+	struct client_state *cli = &bst->clients[0];
+
+	for_each_client_from(cli, bst, bst->request_index) {
+		if (cli->request >= RPDFS_CACHE_MODE_READ) {
+			bst->request_index = cli_index(bst, cli);
+			return cli;
+		}
+	}
+
+	return NULL;
+}
+
+static int send_read_result(struct block_state *bst, struct client_state *cli, u8 mode,
+			    struct cached_block *cblk, struct rpdfs_block_details *det,
+			    int read_ret)
+{
+	struct rpdfs_msg_block_read_result rr;
+	struct rpdfs_msg_header hdr;
+	struct page *data_page;
+
+	rr.bnr = cpu_to_le64(bst->bnr);
+	rr.wcount = 0;
+	rr.grant_mode = mode;
+	rr.err = rpdfs_msg_err(read_ret);
+	memset_zero_sizeof(rr._pad);
+
+	hdr.ctl_size = sizeof(rr);
+	hdr.data_size = 0;
+	hdr.type = RPDFS_MSG_BLOCK_READ_RESULT;
+	data_page = NULL;
+
+	if (read_ret == 0) {
+		rr.wcount = det->write_ctr;
+		if (cli->read_data) {
+			hdr.data_size = cpu_to_le16(RPDFS_BLOCK_SIZE);
+			data_page = block_data_page(cblk);
+		}
+	}
+
+	return net_send(&cli->addr, &hdr, &rr, data_page);
+}
+
+static int send_cache_mode(struct block_state *bst, struct client_state *cli, u8 type, u8 mode)
 {
 	struct rpdfs_msg_cache_mode cm;
 	struct rpdfs_msg_header hdr;
 
-	cm.bnr = cpu_to_le64(bnr);
+	cm.bnr = cpu_to_le64(bst->bnr);
 	cm.mode = mode;
 	memset_zero_sizeof(cm._pad);
 
 	hdr.data_size = 0;
 	hdr.ctl_size = sizeof(cm);
-	hdr.type = RPDFS_MSG_BLOCK_MODE_SET;
+	hdr.type = type;
 
 	return net_send(&cli->addr, &hdr, &cm, NULL);
 }
 
 /*
  * Advance the state machine across all the clients for a given block.
- * The driver of state changes are incoming requests.  If their
- * requested mode is incompatible with existing modes then we send
- * unsolicited mode changes.  As we get ack responses and update ther
- * client's mode they will be compatible with the request and we can
- * eventually send it a positive response.
+ * The driver of change is incoming requests.  If their requested mode
+ * is incompatible with other granted modes then we send revokes.  Once
+ * the revokes are confirmed then the request is compatible with other
+ * grants and we can send a grant for the request.
+ *
+ * We take responsibility of putting the bst from the caller.  They
+ * can't use their bst once this is called.
+ *
+ * ->reading acts to pause processing while a utask is reading the
+ * block.  While it's reading the block state won't be freed and no
+ * further processing will be done.  Once the read is complete it
+ * returns to processing and can then send block contents for any read
+ * responses.
  */
-static int process_requests(struct cache_mode_instance *inst, u64 bnr)
+static void process_requests_and_put(struct cache_mode_instance *inst, struct block_state *bst)
 {
-	struct client_mode *cli;
-	struct client_mode *req;
-	struct client_mode *tmp;
-	bool saw_incompat = false;
+	struct cached_block *cblk = NULL;
+	struct rpdfs_block_details det;
+	struct client_state *cli;
+	struct client_state *req;
+	bool saw_incompat;
+	int read_ret = 0;
 	u8 compat;
 	int ret;
 
-	while ((req = find_processing_request(inst, bnr))) {
+	if (!bst || bst->reading)
+		return;
+
+restart:
+	while ((req = find_request(bst))) {
+
+		/* don't process next request until revokes have been confirmed */
+		if (req->revoke)
+			break;
 
 		compat = most_compatible(req->request);
 		saw_incompat = false;
-		ret = 0;
 
-		/* send compatible modes to any clients with incompatible modes */
-		for_each_cli_bnr(cli, tmp, req) {
-			if (cli == req)
+		for_each_client(cli, bst) {
+			if (cli == req || compatible_modes(cli->grant, req->request))
 				continue;
-			if (compatible_modes(cli->mode, req->request))
-				break;
 
 			saw_incompat = true;
 
-			if (!cli->sent) {
-				ret = send_mode_set(cli, bnr, cli->mode, compat);
-				if (ret < 0)
-					goto out;
+			if (!cli->revoke || compat < cli->revoke) {
+				ret = send_cache_mode(bst, cli, RPDFS_MSG_BLOCK_REVOKE_MODE,
+						      compat);
+				BUG_ON(ret < 0); /* evict?  shutdown? */
 
-				cli->sent = compat;
+				cli->revoke = compat;
 			}
 		}
 
 		if (saw_incompat)
 			break;
 
-		/*
-		 * This might schedule while reading block data.  We set
-		 * ->sent first to prevent other utask callers from
-		 * working on this request while we're reading.  Once we
-		 * return the client tracking might have changed.  We
-		 * only touch our request client before continuing at
-		 * the end of the loop which fetches the next request
-		 * and resets all state.
-		 */
-		req->sent = req->request;
-		ret = send_read_result(req, bnr, req->mode, req->request);
-		if (ret < 0) {
-			req->sent = 0;
-			goto out;
+		/* logical bst is pinned, but it can be realloced if requests arrive */
+		if (req->is_read && cblk == NULL && read_ret == 0) {
+			u64 bnr = bst->bnr;
+
+			bst->reading = 1;
+			read_ret = bstore_read(bnr, &cblk, &det);
+			bst = (struct block_state *)htable_lookup(inst->ht, bnr);
+			BUG_ON(bst == NULL); /* should have been pinned by ->reading */
+			bst->reading = 0;
+
+			goto restart;
 		}
 
-		/* set more restrictive while sending, ack rx sets less restrictive */
-		if (req->request > req->mode)
-			req->mode = req->request;
+		if (req->is_read)
+			ret = send_read_result(bst, req, req->request, cblk, &det, read_ret);
+		else
+			ret = send_cache_mode(bst, req, RPDFS_MSG_BLOCK_GRANT_MODE, req->request);
+		BUG_ON(ret < 0); /* evict?  shutdown? */
+
+		req->grant = req->request;
 		req->request = RPDFS_CACHE_MODE_NULL;
-		req->processing = 0;
+		req->is_read = 0;
+		req->read_data = 0;
 	}
 
-	ret = 0;
-out:
-	return ret;
+	block_put(cblk);
+	put_block_state(inst, bst);
 }
 
 /*
- * Record an incoming cache mode request.  A read_result message will be
- * sent once the requested mode can be granted.  That might happen in
- * this call, but perhaps later after communicating with other clients.
+ * Record a request from the client for a mode for its block.  We'll
+ * block until the mode is available for and the caller can send the
+ * response message (probably including a read of the block contents.)
  *
- * Must be called from a utask.
+ * The client only sends requests for higher modes.  The only time we'll
+ * have two requests in flight is if a read was pending and a write
+ * arrived.
  */
-int cache_mode_request(struct sockaddr_in *addr, u64 bnr, u8 mode, bool no_data)
+int cache_mode_request(struct sockaddr_in *addr, u64 bnr, u8 mode, bool is_read, bool with_data)
 {
 	struct cache_mode_instance *inst = &global_cache_mode_inst;
-	struct client_mode *cli;
+	struct block_state *bst = NULL;
+	struct client_state *cli;
 	int ret;
 
-	cli = get_client_mode(inst, bnr, addr, GCM_ALLOC);
-	if (!cli) {
-		ret = -ENOMEM;
+	/* only support requesting elevated modes for now */
+	if (mode < RPDFS_CACHE_MODE_READ) {
+		ret = -EINVAL;
 		goto out;
 	}
 
-	/*
-	 * If we allocated the client couldn't have had a non-null mode.
-	 * (XXX but we're trusting that this is happening, might be good
-	 * to have the client send its current mode but then we have to
-	 * deal with that racing with us adopting a more exclusive mode
-	 * as we send.)
-	 */
-	if (cli->mode == RPDFS_CACHE_MODE_NULL)
-		cli->mode = RPDFS_CACHE_MODE_NONE;
+	ret = get_block_client(inst, bnr, addr, &bst, &cli);
+	if (ret < 0)
+		goto out;
 
-	/* client must only have one request in flight at a time */
-	if (cli->request) {
-		ret = -EPROTO;
+	/* shouldn't request dupes, or read while write in flight */
+	if (mode <= cli->request) {
+		ret = -EINVAL;
 		goto out;
 	}
 
 	cli->request = mode;
-	cli->no_data = !!no_data;
+	if (is_read && !cli->is_read) {
+		cli->is_read = 1;
+		cli->read_data = !!with_data;
+	}
 
-	ret = process_requests(inst, bnr);
+	ret = 0;
 out:
+	process_requests_and_put(inst, bst);
 	return ret;
 }
 
 /*
- * Received indication from a client that it has accepted the mode that
- * we sent it.  This can come in the form of explicit messages or
- * implicitly as clients write out dirty blocks.
+ * We can only receive confirms in response to having sent revokes lower
+ * the client's granted mode while processing an incompatible request.
+ *
+ * We can send back-to-back revokes for decreasing modes.  We can send
+ * READ, then NONE.  We can receive a corresponding stream of confirms
+ * response.
+ *
+ * We can receive a confirm for an even lesser mode than what we revoked
+ * in the case that the client shrank and removed their cached block
+ * before they received the revoke.
  */
-int cache_mode_ack(struct sockaddr_in *addr, u64 bnr, u8 mode)
+int cache_mode_confirm(struct sockaddr_in *addr, u64 bnr, u8 mode)
 {
 	struct cache_mode_instance *inst = &global_cache_mode_inst;
-	struct client_mode *cli;
+	struct block_state *bst = NULL;
+	struct client_state *cli;
 	int ret;
 
-	cli = get_client_mode(inst, bnr, addr, GCM_ALLOC);
-	if (!cli) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	/* we must only have one set msg in flight */
-	if (cli->sent != mode) {
+	if (mode < RPDFS_CACHE_MODE_NONE || mode > RPDFS_CACHE_MODE_READ) {
 		ret = -EPROTO;
 		goto out;
 	}
 
-	/* sending set more restrictive mode, we set less restrictive */
-	if (cli->sent < cli->mode)
-		cli->mode = cli->sent;
-	cli->sent = RPDFS_CACHE_MODE_NULL;
+	ret = get_block_client(inst, bnr, addr, &bst, &cli);
+	if (ret < 0)
+		goto out;
 
-	if (!cli->request && cli->mode == RPDFS_CACHE_MODE_NONE)
-		free_client_mode(inst, cli);
+	if (mode > cli->grant || !cli->revoke) {
+		ret = -EPROTO;
+		goto out;
+	}
 
-	ret = process_requests(inst, bnr);
+	cli->grant = mode;
+	if (mode <= cli->revoke)
+		cli->revoke = RPDFS_CACHE_MODE_NULL;
+
+	ret = 0;
+
 out:
+	process_requests_and_put(inst, bst);
 	return ret;
 }
 
-/*
- * Process requests for a given block without returning processing
- * errors to the caller.  There may be no recorded client modes for the
- * block (the caller can be processing an ack of the last client who was
- * sent a null mode).
- */
-void cache_mode_process(u64 bnr)
+int cache_mode_init(void)
 {
 	struct cache_mode_instance *inst = &global_cache_mode_inst;
 
-	process_requests(inst, bnr);
+	/* XXX we don't shrink to keep the block state count within this limit */
+	inst->ht = htable_alloc(1024 * 1024);
+	if (!inst->ht)
+		return -ENOMEM;
+
+	return 0;
+}
+
+void cache_mode_exit(void)
+{
+	struct cache_mode_instance *inst = &global_cache_mode_inst;
+	struct block_state *bst;
+	unsigned long fe;
+
+	if (inst->ht) {
+		htable_foreach_init(inst->ht, &fe);
+		while ((bst = (struct block_state *)htable_foreach(inst->ht, &fe)))
+			free(bst);
+		free(inst->ht);
+		inst->ht = NULL;
+	}
 }

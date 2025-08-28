@@ -29,6 +29,7 @@
 #include "utask/utask.h"
 
 #include "devd/bstore.h"
+#include "devd/cache-mode.h"
 #include "devd/proc.h"
 
 struct devd_options {
@@ -112,10 +113,12 @@ static void main_utask(void *data)
 	ret = block_init(dm->opts.dev_path, BLOCK_QUEUE_DEPTH) ?:
 	      bstore_init() ?:
 	      net_init() ?:
+	      cache_mode_init() ?:
 	      net_register_recv(proc_recv) ?:
 	      net_listen(&dm->opts.listen_addr) ?:
 	      utask_wait_event_task(utask_am_canceled());
 
+	cache_mode_exit();
 	net_exit();
 	bstore_exit();
 	block_exit();

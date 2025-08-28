@@ -41,8 +41,19 @@ static void free_proc_request(struct proc_request *preq)
 	}
 }
 
+static int send_ctl(struct sockaddr_in *addr, u8 type, void *ctl_buf, u8 ctl_size)
+{
+	struct rpdfs_msg_header hdr = {
+		.data_size = 0,
+		.ctl_size = ctl_size,
+		.type = type,
+	};
+
+	return net_send(addr, &hdr, ctl_buf, NULL);
+}
+
 /*
- * The  main block_read handler just hands the request off to the cache
+ * The main block_read handler just hands the request off to the cache
  * mode manager.  It will make sure that other clients have compatible
  * modes before sending the result.  It is responsible for sending the
  * block data along with the result, if necessary.
@@ -51,64 +62,67 @@ static void block_read_utask(void *data)
 {
 	struct proc_request *preq = data;
 	struct rpdfs_msg_block_read *br = preq->ctl_buf;
+	struct rpdfs_msg_block_read_result rr;
 	const u64 bnr = le64_to_cpu(br->bnr);
+	bool with_data;
 	int ret;
 
-	ret = cache_mode_request(&preq->addr, bnr, br->mode,
-				 !!(le64_to_cpu(br->flags) & RPDFS_MSG_BLOCK_READ_FLAG_NO_DATA));
-	BUG_ON(ret);
+	if (br->request_mode < RPDFS_CACHE_MODE_NULL) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	with_data = (le64_to_cpu(br->flags) & RPDFS_MSG_BLOCK_READ_FLAG_DATA) != 0;
+
+	ret = cache_mode_request(&preq->addr, bnr, br->request_mode, true, with_data);
+out:
+	if (ret < 0) {
+		rr.bnr = cpu_to_le64(bnr);
+		rr.grant_mode = RPDFS_CACHE_MODE_NULL;
+		rr.err = rpdfs_msg_err(ret);
+		ret = send_ctl(&preq->addr, RPDFS_MSG_BLOCK_READ_RESULT, &rr, sizeof(rr));
+		/* shutdown on send errors? */
+	}
+
+	BUG_ON(ret != 0); /* XXX reconnect? timeout? evict? */
 
 	free_proc_request(preq);
 }
 
 /*
  * If the sender is flushing in response to losing their write mode then
- * the write command is also a mode ack.  We only process the ack if the
+ * the write can contain an acked mode.  We only process the ack if the
  * IO succeeds.  The caller will resend writes as long as the block is
- * dirty.  (If they give up and drop the dirty block they can send a
- * mode ack).
+ * dirty.  (If they give up and drop the dirty block they can send an
+ * ack mode).
  */
 static void block_write_utask(void *data)
 {
 	struct proc_request *preq = data;
 	struct rpdfs_msg_block_write *bw = preq->ctl_buf;
 	struct rpdfs_msg_block_write_result wr;
+	struct rpdfs_block_details in_det;
 	const u64 bnr = le64_to_cpu(bw->bnr);
-	struct rpdfs_msg_header hdr;
 	int ret;
 
-	ret = bstore_write(bnr, preq->data_page);
-	if (ret < 0)
-		goto send;
+	in_det.write_ctr = bw->wcount;
 
-	if (bw->mode)
-		ret = cache_mode_ack(&preq->addr, bnr, bw->mode);
-	else
-		ret = 0;
-send:
+	ret = bstore_write(bnr, preq->data_page, &in_det);
+
 	wr.bnr = bw->bnr;
 	wr.err = rpdfs_msg_err(ret);
 	memset_zero_sizeof(wr._pad);
 
-	hdr.data_size = 0;
-	hdr.ctl_size = sizeof(wr);
-	hdr.type = RPDFS_MSG_BLOCK_WRITE_RESULT;
+	ret = send_ctl(&preq->addr, RPDFS_MSG_BLOCK_WRITE_RESULT, &wr, sizeof(wr));
+	if (ret == 0 && bw->confirm_mode)
+		ret = cache_mode_confirm(&preq->addr, bnr, bw->confirm_mode);
 
-	ret = net_send(&preq->addr, &hdr, &wr, NULL);
 	BUG_ON(ret != 0); /* XXX reconnect? timeout? evict? */
-
-	/* only process more cache mode requests after sending result including ack */
-	cache_mode_process(bnr);
 
 	free_proc_request(preq);
 }
 
-/*
- * Sent by the client when it can ack a mode request without having to
- * write the block, so everything but revoking write while the block is
- * dirty.
- */
-static void block_mode_ack_utask(void *data)
+static void block_request_mode_utask(void *data)
 {
 	struct proc_request *preq = data;
 	struct rpdfs_msg_cache_mode *cm = preq->ctl_buf;
@@ -117,7 +131,26 @@ static void block_mode_ack_utask(void *data)
 
 	/* XXX verify */
 
-	ret = cache_mode_ack(&preq->addr, bnr, cm->mode);
+	ret = cache_mode_request(&preq->addr, bnr, cm->mode, false, false);
+	BUG_ON(ret);
+
+	free_proc_request(preq);
+}
+
+/*
+ * Sent by the client once it confirms that its use of the cached block
+ * is compatible with its received revoke mode.
+ */
+static void block_confirm_mode_utask(void *data)
+{
+	struct proc_request *preq = data;
+	struct rpdfs_msg_cache_mode *cm = preq->ctl_buf;
+	const u64 bnr = le64_to_cpu(cm->bnr);
+	int ret;
+
+	/* XXX verify */
+
+	ret = cache_mode_confirm(&preq->addr, bnr, cm->mode);
 	BUG_ON(ret);
 
 	free_proc_request(preq);
@@ -126,7 +159,8 @@ static void block_mode_ack_utask(void *data)
 static utask_fn_t proc_utask_fns[] = {
 	[RPDFS_MSG_BLOCK_READ] = block_read_utask,
 	[RPDFS_MSG_BLOCK_WRITE] = block_write_utask,
-	[RPDFS_MSG_BLOCK_MODE_ACK] = block_mode_ack_utask,
+	[RPDFS_MSG_BLOCK_REQUEST_MODE] = block_request_mode_utask,
+	[RPDFS_MSG_BLOCK_CONFIRM_MODE] = block_confirm_mode_utask,
 };
 
 /*

@@ -949,10 +949,11 @@ static void journal_replay_utask(void *data)
  * block into a send buffer before blocking so the block won't be
  * modified.
  */
-int bstore_read(u64 dev_bnr, struct cached_block **cblk)
+int bstore_read(u64 dev_bnr, struct cached_block **cblk, struct rpdfs_block_details *det)
 {
 	struct bstore_instance *inst = &global_bstore_inst;
 	struct cached_block *det_cblk = NULL;
+	struct rpdfs_dev_details_block *dblk;
 	struct dev_bnr_mapping map;
 	u64 ctr;
 	int ret;
@@ -973,6 +974,12 @@ int bstore_read(u64 dev_bnr, struct cached_block **cblk)
 		      block_read(stable_lba(inst, map.lba), cblk);
 
 	} while (stable_commit_ctr(inst) != ctr);
+	if (ret < 0)
+		goto out;
+
+	/* give the caller the block's details */
+	dblk = block_data_buf(det_cblk);
+	*det = dblk->details[map.details_ind];
 
 out:
 	block_putp(&det_cblk);
@@ -981,13 +988,12 @@ out:
 	return ret;
 }
 
-int bstore_write(u64 dev_bnr, struct page *data_page)
+int bstore_write(u64 dev_bnr, struct page *data_page, struct rpdfs_block_details *in_det)
 {
 	struct bstore_instance *inst = &global_bstore_inst;
 	struct rpdfs_dev_details_block *dblk;
 	struct rpdfs_dev_commit_block *cmt;
 	struct rpdfs_block_details *stable_det = NULL;
-	struct rpdfs_block_details *in_det = NULL;
 	struct rpdfs_block_details *det;
 	struct cached_block *det_cblk = NULL;
 	struct cached_block *sum_cblk = NULL;
@@ -1017,18 +1023,16 @@ int bstore_write(u64 dev_bnr, struct page *data_page)
 	if (ret < 0)
 		goto out;
 
-	/* faking incoming details, don't yet have protocol support */
+	/* get a reference to the stable details for the block */
 	dblk = block_data_buf(det_cblk);
 	stable_det = &dblk->details[map.details_ind];
-	in_det = stable_det;
 
-	/* update the dirty block details for the write */
+	/* update the dirty block details for the write, only write_ctr for now */
 	dirty_block(inst, cmt, &pool, map.details_lba, RPDFS_DEV_BLOCK_TYPE_DETAILS, false,
 		    NULL, det_cblk, &cblk);
 	dblk = block_data_buf(cblk);
 	det = &dblk->details[map.details_ind];
-	*det = *in_det;
-	le64_add_cpu(&det->write_ctr, 1);
+	det->write_ctr = in_det->write_ctr;
 	/* don't have alloc/free */
 	if (det->lifetime_ctr == 0)
 		le64_add_cpu(&det->lifetime_ctr, 1);

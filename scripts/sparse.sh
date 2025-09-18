@@ -66,6 +66,33 @@ include="-include $defines"
 echo "#define __PRETTY_FUNCTION__ __FILE__ " >> $defines
 
 #
+# As gcc's default standard support has increased, sparse can be left
+# behind.  As of this writing, there are a handful of headers that we
+# use that used to provide defines for functionality that is now
+# natively supported by gcc.  In each of these cases you can look at the
+# gcc header and find "__STDC_VERSION__ <=> 201710L" tests.  This tests
+# the version of the standard that gcc is building against and restores
+# the defines for sparse in the cases where the headers were emitting
+# code for gcc that sparse doesn't understand.
+#
+. <(awk '
+	($2 == "__STDC_VERSION__") {
+		print $2 "=" substr($3, 1, length($3) - 1)
+}' < .sparse.gcc-defines.h )
+if [ $__STDC_VERSION__ -gt 201710 ]; then
+	cat >> $defines <<EOF
+	// stdbool.h
+	#define bool    _Bool
+	#define true    1
+	#define false   0
+	// assert.h
+	#define static_assert _Static_assert
+	// stdarg.h
+	#define __builtin_c23_va_start __builtin_va_start
+EOF
+fi
+
+#
 # sparse doesn't seem to notice when it's on a 64bit host.  It warns that
 # 64bit values don't fit in 'unsigned long' without this.
 #

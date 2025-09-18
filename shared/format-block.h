@@ -35,7 +35,8 @@ struct rpdfs_btree_root {
  * significant).
  */
 struct rpdfs_btree_key {
-	__le64 k[3];
+	__le64 lsq;
+	__le64 msq;
 };
 
 /*
@@ -158,7 +159,7 @@ struct rpdfs_inode {
 };
 
 #define RPDFS_ROOT_INO 1
-#define INIT_RPDFS_ROOT_IG { RPDFS_ROOT_INO, 1 }
+#define RPDFS_ROOT_GEN 1
 
 /*
  * This is totally arbitrary.  It looks like it's 32bit in the stat ABI.

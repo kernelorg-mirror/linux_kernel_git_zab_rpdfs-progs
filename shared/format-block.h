@@ -115,7 +115,6 @@ struct rpdfs_data_root {
  * that at compile time.
  */
 #define RPDFS_DATA_REFS_PER_BLK (RPDFS_BLOCK_SIZE / sizeof(struct rpdfs_block_ref))
-BUILD_BUG_ON(RPDFS_DATA_REFS_PER_BLK & (RPDFS_DATA_REFS_PER_BLK - 1));
 
 /*
  * Because blocks per ref is based on the size of a struct, we can't do

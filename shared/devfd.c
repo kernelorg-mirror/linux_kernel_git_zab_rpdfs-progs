@@ -66,7 +66,7 @@ int devfd_write_zeros(int fd, u64 start, u64 len)
 		range[0] = start;
 		range[1] = len;
 
-		if (ioctl(fd, BLKDISCARD, range)) {
+		if (ioctl(fd, BLKZEROOUT, range)) {
 			ret = -errno;
 			goto out;
 		}

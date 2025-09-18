@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <systemd/sd-daemon.h>
 
 #include "shared/dtracef.h"
 #include "shared/lk/err.h"
@@ -116,6 +117,7 @@ static void main_utask(void *data)
 	      cache_mode_init() ?:
 	      net_register_recv(proc_recv) ?:
 	      net_listen(&dm->opts.listen_addr) ?:
+	      ({ sd_notify(0, "READY=1") ; 0; }) ?:
 	      utask_wait_event_task(utask_am_canceled());
 
 	cache_mode_exit();

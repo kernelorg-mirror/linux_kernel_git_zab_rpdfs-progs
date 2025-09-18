@@ -72,6 +72,16 @@ static int format_device_func(int argc, char **argv)
 	journal = total >> 10;
 	commit = journal >> 2;
 	journal -= commit;
+
+	if (commit < RPDFS_DEV_MIN_JC_BLOCKS) {
+		printf("device with %llu 4KiB blocks results in %llu commit blocks.\n"
+		       "%u commit blocks are required, which is met by a device with %llu blocks\n",
+		       total, commit, RPDFS_DEV_MIN_JC_BLOCKS,
+		       ((u64)RPDFS_DEV_MIN_JC_BLOCKS) << 12);
+		ret = -EINVAL;
+		goto out;
+	}
+
 	summary = 1;
 	details = 1;
 	store = total;

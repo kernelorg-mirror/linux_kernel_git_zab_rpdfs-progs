@@ -48,6 +48,13 @@ struct rpdfs_dev_layout {
 };
 
 /*
+ * Arbitrarily declare a functional minimum number of journal or commit
+ * blocks.  The journal blocks are the significant limiting resource,
+ * the journal needs to be able to fit a reasonable number of commits.
+ */
+#define RPDFS_DEV_MIN_JC_BLOCKS 256
+
+/*
  * Each commit block describes all the blocks involved in a coherent
  * atomic change.  The commit block and all its described blocks are
  * written concurrently.  They all need to be checked to verify that the

@@ -1221,6 +1221,11 @@ static int init_journal(struct bstore_instance *inst)
 
 	cmt = block_data_buf(cblk);
 
+	dtracef("bstore_init_journal", "layout cmt %llu journ %llu sum %llu det %llu stor %llu",
+		le64_to_cpu(cmt->layout.commit_blocks), le64_to_cpu(cmt->layout.journal_blocks),
+		le64_to_cpu(cmt->layout.summary_blocks), le64_to_cpu(cmt->layout.details_blocks),
+		le64_to_cpu(cmt->layout.storage_blocks));
+
 	/* catch initialized zero blocks :/ */
 	if (cmt->layout.storage_blocks == 0) {
 		ret = -EINVAL;
@@ -1246,8 +1251,8 @@ static int init_journal(struct bstore_instance *inst)
 	}
 
 	/* arbitrary tiny mins for commits/journal, ulong max for the size of the stable_ht */
-	if (inst->commit_blocks < 256								||
-	    journal_blocks < 256								||
+	if (inst->commit_blocks < RPDFS_DEV_MIN_JC_BLOCKS					||
+	    journal_blocks < RPDFS_DEV_MIN_JC_BLOCKS						||
 	    journal_blocks >= ULONG_MAX								||
 	    summary_blocks < DIV_ROUND_UP(details_blocks, RPDFS_DEV_SUMMARIES_PER_BLOCK)	||
 	    details_blocks < DIV_ROUND_UP(inst->storage_blocks, RPDFS_DEV_DETAILS_PER_BLOCK)) {

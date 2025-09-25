@@ -15,6 +15,7 @@
 #include "shared/lk/uio.h"
 
 #include "shared/compare.h"
+#include "shared/dtracef.h"
 #include "shared/format-block.h"
 #include "shared/msg.h"
 #include "shared/string_wrappers.h"
@@ -350,6 +351,9 @@ static void recv_utask(void *data)
 		if (ret <= 0)
 			goto out;
 
+		dtracef("net_recv_hdr", "t %u cs %u ds %u",
+			hdr.type, hdr.ctl_size, le16_to_cpu(hdr.data_size));
+
 		/* check header */
 		ret = rpdfs_msg_verify_header(&hdr);
 		if (ret < 0)
@@ -385,6 +389,7 @@ static void recv_utask(void *data)
 		}
 
 		ret = inst->recv_fn(&sock->addr, &hdr, ctl_buf, data_page);
+		dtracef("net_recv_fn", "t %u ret %u", hdr.type, ret);
 		if (ret < 0)
 			goto out;
 

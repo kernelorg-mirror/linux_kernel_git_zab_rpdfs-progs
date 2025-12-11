@@ -34,7 +34,7 @@
  * and can also send unsolicited strictly decreasing revokes of
  * previously granted modes.  The client won't request a lesser mode,
  * and the server won't increase the mode without a request.  This
- * simplifies the conditions that the client and server have to
+ * simplifies the state transitions that the client and server have to
  * implement.
  *
  * We then reduce round trips by combining the request for a cache mode
@@ -124,8 +124,11 @@ static unsigned int compatible_modes(u8 a, u8 b)
 }
 
 /*
- * Returns the least restrictive mode that's compatible with the mode
- * mode.  Only really serves to downgrade conflicting writes to reads.
+ * Returns the least restrictive mode that's compatible with the
+ * requested mode.  Existing writes conflicting with requested reads are
+ * allowed to keep their read cache, but anyone conflicting with
+ * requested writes needs to drop their cache so they can later read the
+ * result of the write.
  */
 static inline u8 most_compatible(u8 mode)
 {

@@ -110,33 +110,17 @@ static inline unsigned long cli_index(struct block_state *bst, struct client_sta
 			&(bst_)->clients[cli_index((bst_), cli_ + 1)])
 
 /*
- * Returns true if the two modes can both be granted to different
- * clients.  Only false for write with either read or write.  A static
- * word with bits set for the compatible combinations is clear and fast.
+ * Returns true if the two modes can both be granted for the same block
+ * to different clients.  Only writes are incompatible with other reads
+ * or writes.  All other combinations, including writes with null or
+ * none, are compatible.
  */
-static inline unsigned int compatible_modes(u8 a, u8 b)
+static unsigned int compatible_modes(u8 a, u8 b)
 {
-#define CB__(a, b) (1U << ((a << RPDFS_CACHE_MODE__BITS) | b))
-	const static unsigned int compat_bits =
-		CB__(RPDFS_CACHE_MODE_NULL, RPDFS_CACHE_MODE_NULL) |
-		CB__(RPDFS_CACHE_MODE_NULL, RPDFS_CACHE_MODE_NONE) |
-		CB__(RPDFS_CACHE_MODE_NULL, RPDFS_CACHE_MODE_READ) |
-		CB__(RPDFS_CACHE_MODE_NULL, RPDFS_CACHE_MODE_WRITE) |
-		CB__(RPDFS_CACHE_MODE_NONE, RPDFS_CACHE_MODE_NULL) |
-		CB__(RPDFS_CACHE_MODE_NONE, RPDFS_CACHE_MODE_NONE) |
-		CB__(RPDFS_CACHE_MODE_NONE, RPDFS_CACHE_MODE_READ) |
-		CB__(RPDFS_CACHE_MODE_NONE, RPDFS_CACHE_MODE_WRITE) |
-		CB__(RPDFS_CACHE_MODE_READ, RPDFS_CACHE_MODE_NULL) |
-		CB__(RPDFS_CACHE_MODE_READ, RPDFS_CACHE_MODE_NONE) |
-		CB__(RPDFS_CACHE_MODE_READ, RPDFS_CACHE_MODE_READ) |
-		/* not (READ, WRITE) */
-		CB__(RPDFS_CACHE_MODE_WRITE, RPDFS_CACHE_MODE_NULL) |
-		CB__(RPDFS_CACHE_MODE_WRITE, RPDFS_CACHE_MODE_NONE);
-		/* not (WRITE, READ) */
-		/* not (WRITE, WRITE) */
+	if (a > b)
+		swap(a, b);
 
-	return compat_bits & CB__(a, b);
-#undef CB__
+	return b < RPDFS_CACHE_MODE_WRITE || a <= RPDFS_CACHE_MODE_NONE;
 }
 
 /*

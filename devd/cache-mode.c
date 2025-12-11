@@ -6,14 +6,19 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
+#include "shared/lk/bitops-le.h"
 #include "shared/lk/byteorder.h"
+#include "shared/lk/err.h"
+#include "shared/lk/jhash.h"
 #include "shared/lk/minmax.h"
+#include "shared/lk/rbtree.h"
 
 #include "shared/compare.h"
+#include "shared/dtracef.h"
 #include "shared/format-block.h"
 #include "shared/format-dev.h"
 #include "shared/format-msg.h"
-#include "shared/hash_table.h"
+#include "shared/get_random.h"
 #include "shared/msg.h"
 #include "shared/string_wrappers.h"
 
@@ -54,60 +59,35 @@
  * receiver.  This avoids round-trips to serialize the two messages or
  * managing windows of out-of-order received messages to be processed
  * once their sequence is resolved.
- *
- * A core challenge here is that the amount of memory we're willing to
- * spend tracking the mode of cached blocks limits the cache size of the
- * clients.  We want our tracking to be as dense as possible to make the
- * most of our memory resource and allow the largest caches in clients.
  */
 
 static struct cache_mode_instance {
-	struct hash_table *ht;
+	struct rb_root client_blocks_root;
 } global_cache_mode_inst = {
+	.client_blocks_root = RB_ROOT,
 };
 
-/*
- * This is built to conserve space by having a small dense client id.
- * Today the net layer uses full addresses so the client_state struct is
- * a lot bigger than it would otherwise be.  This can be updated as we
- * add maps and the infrastructure for changing ids over time.
- */
-struct block_state {
+struct client_block {
+	struct rb_node node;
 	u64 bnr;
-	u16 size;
-	u16 request_index;
-	u16 reading:1;
-	struct client_state {
-		struct sockaddr_in addr;
-		u8 request:RPDFS_CACHE_MODE__BITS,
-		    grant:RPDFS_CACHE_MODE__BITS,
-		    revoke:RPDFS_CACHE_MODE__BITS,
-		    is_read:1,
-		    read_data:1;
-	} clients[0];
+	u32 ipv4_addr;
+	u16 ipv4_port;
+	u16 request:RPDFS_CACHE_MODE__BITS,
+	    grant:RPDFS_CACHE_MODE__BITS,
+	    revoke:RPDFS_CACHE_MODE__BITS,
+	    is_read:1,
+	    processing:1,
+	    read_data:1;
 };
 
-/*
- * Iterate over all the present clients in the client array.
- */
-#define for_each_client(cli_, bst_) \
-	for(cli_ = &(bst_)->clients[0]; cli_ < &(bst_)->clients[(bst_)->size]; cli_++)
+#define CLB_ADDR_FMT		"%u.%u.%u.%u:%u"
+#define CLB_ADDR_ARG(clb)	(clb)->ipv4_addr >> 24, ((clb)->ipv4_addr >> 16) & 7, \
+				((clb)->ipv4_addr >> 8) & 7, (clb)->ipv4_addr & 7,  \
+				(clb)->ipv4_port
 
-/* this is clamped to the array size so iterators can wrap with (cli + 1) */
-static inline unsigned long cli_index(struct block_state *bst, struct client_state *cli)
-{
-	return (cli - bst->clients) % bst->size;
-}
-
-/*
- * Iterate over all the clients, starting at a given (wrapped) index,
- * visiting each once.
- */
-#define for_each_client_from(cli_, bst_, ind_) \
-	for(cli_ = &(bst_)->clients[((ind_) % bst->size)]; \
-	    cli_ != NULL; \
-	    cli_ = (cli_index((bst_), cli_ + 1) == ((ind_) % bst->size)) ? NULL : \
-			&(bst_)->clients[cli_index((bst_), cli_ + 1)])
+#define CLB_FMT		"addr "CLB_ADDR_FMT" bnr %llu rq %u gr %u rv %u ir %u pr %u rd %u"
+#define CLB_ARG(clb)	CLB_ADDR_ARG(clb), (clb)->bnr, (clb)->request, (clb)->grant, \
+			(clb)->revoke, (clb)->is_read, (clb)->processing, (clb)->read_data
 
 /*
  * Returns true if the two modes can both be granted for the same block
@@ -135,158 +115,172 @@ static inline u8 most_compatible(u8 mode)
 	return mode == RPDFS_CACHE_MODE_WRITE ? RPDFS_CACHE_MODE_NONE : RPDFS_CACHE_MODE_READ;
 }
 
-static bool cli_is_none(struct client_state *cli)
+static void clb_addr_from_sin(struct client_block *clb, struct sockaddr_in *addr)
 {
-	return cli->request <= RPDFS_CACHE_MODE_NONE &&
-	       cli->grant <= RPDFS_CACHE_MODE_NONE &&
-	       cli->revoke <= RPDFS_CACHE_MODE_NONE;
+	clb->ipv4_addr = ntohl(addr->sin_addr.s_addr);
+	clb->ipv4_port = ntohs(addr->sin_port);
 }
 
-/*
- * As we put the block state we remove any clients that no longer track
- * information and realloc the array to reclaim memory.
- */ 
-static void put_block_state(struct cache_mode_instance *inst, struct block_state *bst)
+static void clb_addr_to_sin(struct sockaddr_in *addr, struct client_block *clb)
 {
-	struct client_state *last;
-	struct client_state *cli;
-	bool shrank = false;
-	void *re;
+	addr->sin_family = AF_INET;
+	addr->sin_addr.s_addr = htonl(clb->ipv4_addr);
+	addr->sin_port = htons(clb->ipv4_port);
+}
 
-	if (!bst || bst->reading)
-		return;
+static int cmp_client_blocks(struct client_block *a, struct client_block *b)
+{
+	return rpdfs_compare(a->bnr, b->bnr) ?:
+	       rpdfs_compare(a->ipv4_addr, b->ipv4_addr) ?:
+	       rpdfs_compare(a->ipv4_port, b->ipv4_port);
+}
 
-	for_each_client(cli, bst) {
-		if (cli_is_none(cli)) {
-			last = &bst->clients[bst->size - 1];
-			if (cli != last) {
-				*cli = *last;
-				if (bst->request_index == cli_index(bst, last))
-					bst->request_index = cli_index(bst, cli);
-			}
-			bst->size--;
-			cli--;
-			shrank = true;
+static struct client_block *search_client_blocks(struct cache_mode_instance *inst,
+						 struct sockaddr_in *addr, u64 bnr,
+						 bool alloc, struct client_block **next)
+{
+	struct rb_node **link = &inst->client_blocks_root.rb_node;
+	struct client_block *clb = NULL;
+	struct rb_node *parent = NULL;
+	struct client_block key;
+	int cmp;
+
+	key.bnr = bnr;
+	clb_addr_from_sin(&key, addr);
+	if (next)
+		*next = NULL;
+
+	while (*link) {
+		clb = container_of(*link, struct client_block, node);
+		parent = *link;
+
+		cmp = cmp_client_blocks(&key, clb);
+		if (cmp < 0) {
+			link = &(*link)->rb_left;
+			if (next)
+				*next = clb;
+		} else if (cmp > 0) {
+			link = &(*link)->rb_right;
+		} else {
+			break;
+		}
+		clb = NULL;
+	}
+
+	if (!clb && alloc) {
+		clb = calloc(1, sizeof(struct client_block));
+		if (clb) {
+			clb->bnr = bnr;
+			clb_addr_from_sin(clb, addr);
+
+			rb_link_node(&clb->node, parent, link);
+			rb_insert_color(&clb->node, &inst->client_blocks_root);
+
+			dtracef("cache_mode_alloc", "clb %p "CLB_FMT, clb, CLB_ARG(clb));
+		} else {
+			clb = ERR_PTR(-ENOMEM);
 		}
 	}
 
-	if (bst->size == 0) {
-		htable_delete(inst->ht, bst->bnr);
-		free(bst);
+	return clb;
+}
 
-	} else if (shrank) {
-		re = realloc(bst, offsetof(struct block_state, clients[bst->size]));
-		if (re) {
-			bst = re;
-			htable_insert(inst->ht, bst->bnr, (u64)bst);
-		}
+static void try_free_null_client_block(struct cache_mode_instance *inst, struct client_block *clb)
+{
+	if (clb->request == RPDFS_CACHE_MODE_NULL && clb->grant == RPDFS_CACHE_MODE_NULL &&
+	    clb->revoke == RPDFS_CACHE_MODE_NULL) {
+		rb_erase(&clb->node, &inst->client_blocks_root);
+		dtracef("cache_mode_free", "clb %p "CLB_FMT, clb, CLB_ARG(clb));
+		free(clb);
 	}
 }
 
-static bool addrs_equal(struct sockaddr_in *a, struct sockaddr_in *b)
+static inline struct client_block *clb_container(struct rb_node *node)
 {
-	return a->sin_addr.s_addr == b->sin_addr.s_addr &&
-	       a->sin_port == b->sin_port &&
-	       a->sin_family == b->sin_family;
+	return node ? container_of(node, struct client_block, node) : NULL;
 }
 
+static inline struct client_block *next_clb(struct client_block *clb)
+{
+	return clb ? clb_container(rb_next(&clb->node)) : NULL;
+}
+
+static struct client_block *first_client_block(struct cache_mode_instance *inst, u64 bnr)
+{
+	struct sockaddr_in addr = {0,};
+	struct client_block *clb;
+
+	/* can never have a client block with 0 addr, can only get next */
+	search_client_blocks(inst, &addr, bnr, false, &clb);
+	if (clb && clb->bnr != bnr)
+		clb = NULL;
+	return clb;
+}
+
+static struct client_block *next_client_block(struct client_block *clb, u64 bnr)
+{
+	clb = next_clb(clb);
+	if (clb && clb->bnr != bnr)
+		clb = NULL;
+	return clb;
+}
+
+#define for_each_client_block(inst_, bnr_, clb_) \
+	for (clb_ = first_client_block(inst_, bnr_); clb_; clb_ = next_client_block(clb_, bnr_))
+
 /*
- * We're relying on the allocator to manage fragmentation of precise
- * allocation.  This lets us put off maintaining our own utilization
- * inside a fixed size pool, which we will probably have to do
- * eventually.  For now burn cpu to realloc the block state with its
- * array each time its size changes.  This is the growth side, put_
- * shrinks.
+ * We randomly choose which request to process amongst the waiting
+ * requests.  We then mark it as being processed so we'll process it
+ * fully before moving on to the next.  We won't process a request from
+ * a client for a block until all the sent revokes have been confirmed.
  */
-static int get_block_client(struct cache_mode_instance *inst, u64 bnr, struct sockaddr_in *addr,
-			    struct block_state **bst_ret, struct client_state **cli_ret)
+static struct client_block *find_request(struct cache_mode_instance *inst, u64 bnr)
 {
-	struct block_state *bst = NULL;
-	struct client_state *cli = NULL;
-	void *re;
-	int ret;
+	struct client_block *next;
+	struct client_block *clb;
+	u32 greatest;
+	u32 hash;
+	u32 seed;
 
-	bst = (struct block_state *)htable_lookup(inst->ht, bnr);
-	if (!bst) {
-		bst = malloc(offsetof(struct block_state, clients[1]));
-		if (!bst) {
-			ret = -ENOMEM;
+	get_random(&seed, sizeof(seed));
+	greatest = 0;
+	next = NULL;
+
+	for_each_client_block(inst, bnr, clb) {
+		dtracef("cache_mode_find_req", "clb "CLB_FMT, CLB_ARG(clb));
+
+		if (clb->request < RPDFS_CACHE_MODE_READ || clb->revoke)
+			continue;
+
+		if (clb->processing)
 			goto out;
-		}
 
-		bst->bnr = bnr;
-		bst->size = 1;
-		bst->request_index = 0;
-		bst->reading = 0;
-		htable_insert(inst->ht, bst->bnr, (u64)bst);
-
-		cli = &bst->clients[0];
-		goto init_cli;
-	}
-
-	for_each_client(cli, bst) {
-		if (addrs_equal(&cli->addr, addr)) {
-			ret = 0;
-			goto out;
+		hash = jhash_2words(clb->ipv4_addr, clb->ipv4_port, seed);
+		if (next == NULL || hash > greatest) {
+			next = clb;
+			greatest = hash;
 		}
 	}
 
-	re = realloc(bst, offsetof(struct block_state, clients[bst->size + 1]));
-	if (!re) {
-		ret = -errno;
-		goto out;
+	if (next) {
+		clb = next;
+		clb->processing = 1;
+	} else {
+		clb = NULL;
 	}
-	bst = re;
-
-	htable_insert(inst->ht, bst->bnr, (u64)bst);
-	cli = &bst->clients[bst->size++];
-init_cli:
-	*cli = (struct client_state) {
-		.addr = *addr,
-	};
-
-	ret = 0;
 out:
-	if (ret < 0) {
-		put_block_state(inst, bst);
-		bst = NULL;
-		cli = NULL;
-	}
-
-	*bst_ret = bst;
-	*cli_ret = cli;
-
-	return ret;
+	return clb;
 }
 
-/*
- * We don't spend the memory on strict fifo processing of requests.  We
- * try to process in round-robin order.  We will process a given request
- * until it is resolved before moving on to the next one.
- */
-static struct client_state *find_request(struct block_state *bst)
-{
-	struct client_state *cli = &bst->clients[0];
-
-	for_each_client_from(cli, bst, bst->request_index) {
-		if (cli->request >= RPDFS_CACHE_MODE_READ) {
-			bst->request_index = cli_index(bst, cli);
-			return cli;
-		}
-	}
-
-	return NULL;
-}
-
-static int send_read_result(struct block_state *bst, struct client_state *cli, u8 mode,
-			    struct cached_block *cblk, struct rpdfs_block_details *det,
-			    int read_ret)
+static int send_read_result(struct client_block *clb, u8 mode, struct cached_block *cblk,
+			    struct rpdfs_block_details *det, int read_ret)
 {
 	struct rpdfs_msg_block_read_result rr;
 	struct rpdfs_msg_header hdr;
+	struct sockaddr_in addr;
 	struct page *data_page;
 
-	rr.bnr = cpu_to_le64(bst->bnr);
+	rr.bnr = cpu_to_le64(clb->bnr);
 	rr.wcount = 0;
 	rr.grant_mode = mode;
 	rr.err = rpdfs_msg_err(read_ret);
@@ -299,21 +293,23 @@ static int send_read_result(struct block_state *bst, struct client_state *cli, u
 
 	if (read_ret == 0) {
 		rr.wcount = det->write_ctr;
-		if (cli->read_data) {
+		if (clb->read_data) {
 			hdr.data_size = cpu_to_le16(RPDFS_BLOCK_SIZE);
 			data_page = block_data_page(cblk);
 		}
 	}
 
-	return net_send(&cli->addr, &hdr, &rr, data_page);
+	clb_addr_to_sin(&addr, clb);
+	return net_send(&addr, &hdr, &rr, data_page);
 }
 
-static int send_cache_mode(struct block_state *bst, struct client_state *cli, u8 type, u8 mode)
+static int send_cache_mode(struct client_block *clb, u8 type, u8 mode)
 {
 	struct rpdfs_msg_cache_mode cm;
 	struct rpdfs_msg_header hdr;
+	struct sockaddr_in addr;
 
-	cm.bnr = cpu_to_le64(bst->bnr);
+	cm.bnr = cpu_to_le64(clb->bnr);
 	cm.mode = mode;
 	memset_zero_sizeof(cm._pad);
 
@@ -321,7 +317,8 @@ static int send_cache_mode(struct block_state *bst, struct client_state *cli, u8
 	hdr.ctl_size = sizeof(cm);
 	hdr.type = type;
 
-	return net_send(&cli->addr, &hdr, &cm, NULL);
+	clb_addr_to_sin(&addr, clb);
+	return net_send(&addr, &hdr, &cm, NULL);
 }
 
 /*
@@ -331,84 +328,71 @@ static int send_cache_mode(struct block_state *bst, struct client_state *cli, u8
  * the revokes are confirmed then the request is compatible with other
  * grants and we can send a grant for the request.
  *
- * We take responsibility of putting the bst from the caller.  They
- * can't use their bst once this is called.
- *
- * ->reading acts to pause processing while a utask is reading the
- * block.  While it's reading the block state won't be freed and no
- * further processing will be done.  Once the read is complete it
- * returns to processing and can then send block contents for any read
- * responses.
+ * This takes responsibility for sending a read result along with its
+ * data contents on behalf of a read request.  This can happen long
+ * after the initial read request was recorded and after having sent a
+ * revocations and received confirmations.
  */
-static void process_requests_and_put(struct cache_mode_instance *inst, struct block_state *bst)
+static void process_requests(struct cache_mode_instance *inst, u64 bnr)
 {
 	struct cached_block *cblk = NULL;
 	struct rpdfs_block_details det;
-	struct client_state *cli;
-	struct client_state *req;
+	struct client_block *req;
+	struct client_block *clb;
 	bool saw_incompat;
 	int read_ret = 0;
 	u8 compat;
 	int ret;
 
-	if (!bst || bst->reading)
-		return;
-
 restart:
-	while ((req = find_request(bst))) {
+	while ((req = find_request(inst, bnr))) {
 
-		/* don't process next request until revokes have been confirmed */
-		if (req->revoke)
-			break;
+		dtracef("cache_mode_process", "clb "CLB_FMT, CLB_ARG(req));
 
 		compat = most_compatible(req->request);
 		saw_incompat = false;
 
-		for_each_client(cli, bst) {
-			if (cli == req || compatible_modes(cli->grant, req->request))
+		for_each_client_block(inst, bnr, clb) {
+			if (clb == req || compatible_modes(clb->grant, req->request))
 				continue;
+
+			dtracef("cache_mode_incompat", "clb "CLB_FMT, CLB_ARG(clb));
 
 			saw_incompat = true;
 
-			if (!cli->revoke || compat < cli->revoke) {
-				ret = send_cache_mode(bst, cli, RPDFS_MSG_BLOCK_REVOKE_MODE,
-						      compat);
+			if (!clb->revoke || compat < clb->revoke) {
+				ret = send_cache_mode(clb, RPDFS_MSG_BLOCK_REVOKE_MODE, compat);
 				BUG_ON(ret < 0); /* evict?  shutdown? */
 
-				cli->revoke = compat;
+				clb->revoke = compat;
 			}
 		}
 
 		if (saw_incompat)
 			break;
 
-		/* logical bst is pinned, but it can be realloced if requests arrive */
+		/* other utasks can finish reads and respond before we wake, always restart */
 		if (req->is_read && cblk == NULL && read_ret == 0) {
-			u64 bnr = bst->bnr;
-
-			bst->reading = 1;
 			read_ret = bstore_read(bnr, &cblk, &det);
-			bst = (struct block_state *)htable_lookup(inst->ht, bnr);
-			BUG_ON(bst == NULL); /* should have been pinned by ->reading */
-			bst->reading = 0;
-
 			goto restart;
 		}
 
 		if (req->is_read)
-			ret = send_read_result(bst, req, req->request, cblk, &det, read_ret);
+			ret = send_read_result(req, req->request, cblk, &det, read_ret);
 		else
-			ret = send_cache_mode(bst, req, RPDFS_MSG_BLOCK_GRANT_MODE, req->request);
+			ret = send_cache_mode(req, RPDFS_MSG_BLOCK_GRANT_MODE, req->request);
 		BUG_ON(ret < 0); /* evict?  shutdown? */
 
 		req->grant = req->request;
 		req->request = RPDFS_CACHE_MODE_NULL;
 		req->is_read = 0;
+		req->processing = 0;
 		req->read_data = 0;
+
+		dtracef("cache_mode_grant", "clb "CLB_FMT, CLB_ARG(req));
 	}
 
 	block_put(cblk);
-	put_block_state(inst, bst);
 }
 
 /*
@@ -423,8 +407,7 @@ restart:
 int cache_mode_request(struct sockaddr_in *addr, u64 bnr, u8 mode, bool is_read, bool with_data)
 {
 	struct cache_mode_instance *inst = &global_cache_mode_inst;
-	struct block_state *bst = NULL;
-	struct client_state *cli;
+	struct client_block *clb;
 	int ret;
 
 	/* only support requesting elevated modes for now */
@@ -433,25 +416,29 @@ int cache_mode_request(struct sockaddr_in *addr, u64 bnr, u8 mode, bool is_read,
 		goto out;
 	}
 
-	ret = get_block_client(inst, bnr, addr, &bst, &cli);
-	if (ret < 0)
+	clb = search_client_blocks(inst, addr, bnr, true, NULL);
+	if (IS_ERR(clb)) {
+		ret = PTR_ERR(clb);
 		goto out;
+	}
 
 	/* shouldn't request dupes, or read while write in flight */
-	if (mode <= cli->request) {
+	if (mode <= clb->request) {
 		ret = -EINVAL;
 		goto out;
 	}
 
-	cli->request = mode;
-	if (is_read && !cli->is_read) {
-		cli->is_read = 1;
-		cli->read_data = !!with_data;
+	clb->request = mode;
+	if (is_read && !clb->is_read) {
+		clb->is_read = 1;
+		clb->read_data = !!with_data;
 	}
+
+	dtracef("cache_mode_request", "mode %u clb "CLB_FMT, mode, CLB_ARG(clb));
 
 	ret = 0;
 out:
-	process_requests_and_put(inst, bst);
+	process_requests(inst, bnr);
 	return ret;
 }
 
@@ -470,8 +457,7 @@ out:
 int cache_mode_confirm(struct sockaddr_in *addr, u64 bnr, u8 mode)
 {
 	struct cache_mode_instance *inst = &global_cache_mode_inst;
-	struct block_state *bst = NULL;
-	struct client_state *cli;
+	struct client_block *clb;
 	int ret;
 
 	if (mode < RPDFS_CACHE_MODE_NONE || mode > RPDFS_CACHE_MODE_READ) {
@@ -479,49 +465,45 @@ int cache_mode_confirm(struct sockaddr_in *addr, u64 bnr, u8 mode)
 		goto out;
 	}
 
-	ret = get_block_client(inst, bnr, addr, &bst, &cli);
-	if (ret < 0)
+	clb = search_client_blocks(inst, addr, bnr, true, NULL);
+	if (IS_ERR(clb)) {
+		ret = PTR_ERR(clb);
 		goto out;
+	}
 
-	if (mode > cli->grant || !cli->revoke) {
+	if (mode > clb->grant || !clb->revoke) {
 		ret = -EPROTO;
 		goto out;
 	}
 
-	cli->grant = mode;
-	if (mode <= cli->revoke)
-		cli->revoke = RPDFS_CACHE_MODE_NULL;
+	if (mode > RPDFS_CACHE_MODE_NONE)
+		clb->grant = mode;
+	else
+		clb->grant = RPDFS_CACHE_MODE_NULL;
+	if (mode <= clb->revoke)
+		clb->revoke = RPDFS_CACHE_MODE_NULL;
+
+	dtracef("cache_mode_confirm", "mode %u clb "CLB_FMT, mode, CLB_ARG(clb));
+	try_free_null_client_block(inst, clb);
 
 	ret = 0;
-
 out:
-	process_requests_and_put(inst, bst);
+	process_requests(inst, bnr);
 	return ret;
 }
 
 int cache_mode_init(void)
 {
-	struct cache_mode_instance *inst = &global_cache_mode_inst;
-
-	/* XXX we don't shrink to keep the block state count within this limit */
-	inst->ht = htable_alloc(1024 * 1024);
-	if (!inst->ht)
-		return -ENOMEM;
-
 	return 0;
 }
 
 void cache_mode_exit(void)
 {
 	struct cache_mode_instance *inst = &global_cache_mode_inst;
-	struct block_state *bst;
-	unsigned long fe;
+	struct client_block *clb;
+	struct client_block *n;
 
-	if (inst->ht) {
-		htable_foreach_init(inst->ht, &fe);
-		while ((bst = (struct block_state *)htable_foreach(inst->ht, &fe)))
-			free(bst);
-		free(inst->ht);
-		inst->ht = NULL;
-	}
+	rbtree_postorder_for_each_entry_safe(clb, n, &inst->client_blocks_root, node)
+		free(clb);
+	inst->client_blocks_root = RB_ROOT;
 }

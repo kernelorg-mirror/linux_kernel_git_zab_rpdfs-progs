@@ -25,9 +25,7 @@ Example invocation:
 In another terminal:
 
 ```
-	$ ./cli/rpdfs-cli debugfs -d 127.0.0.1:8081 -t /tmp/trace_debugfs
-	<1> $ mkfs
-	<1> $ stat
+	# mount -t rpdfs -o mkfs 127.0.0.1:8081 /mnt
 ```
 
 ## Code Layout
@@ -43,18 +41,12 @@ This is all the code that's shared by each utility.  It's not a proper
 library in that it doesn't need to remain API compatible with external
 builds over time.
 
-There's two kinds of shared code.  There's code that can run in either
-userspace or the kernel (block.c) and shared code that only runs in
-userspace (options.c).  It'd probably be worth making this distinction
-more apparent.
-
 **shared/lk/**
 
-This is for userspace implementations of kernel interfaces.  This both
-lets us use reasonably stand-alone kernel interfaces (list.h) in
-userspace as well as share rpdfs code with the kernel module by
-providing implementations of more complicated runtime services (RCU hash
-tables, work queues).
+This is for userspace implementations of kernel interfaces.  This lets
+us use reasonably stand-alone kernel interfaces (list.h) in userspace
+by providing implementations of more complicated runtime services (RCU
+hash tables, work queues).
 
 **shared/format-{block,msg,trace}.h**
 

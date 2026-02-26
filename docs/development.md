@@ -1,19 +1,15 @@
 ## Running
 
-Compile the code with make. You will need librcu and sparse installed.
-The sparse package tends to depend on a lot of other packages, so you
-may want to build and install your own.
+Compile the code with make. You will need sparse installed.  The sparse
+package tends to depend on a lot of other packages, so you may want to
+build and install your own.
 
-rpdfs currently only runs in userspace. There are two components: the
-devd process and the debugfs process.
+The two main components of rpdfs are the devd storage userspace server
+built here, and a kernel client module maintained elsewhere.
 
-The devd process listens on a socket for block IO requests. The
-debugfs process reads commands from stdin and turns them into rpdfs
-operations, which generate IO requests to the devd process. Thus you
-need to tell the devd process where to listen and the debugfs process
-where to connect. The devd process also needs to know where its
-backing store is. Another required argument is a path to a file to
-write trace data to.
+The devd process requires a listening address and a backing storage
+device.  Optionally it can be given a file in which to write debugging
+traces.
 
 Example invocation:
 
@@ -25,6 +21,10 @@ Example invocation:
 In another terminal:
 
 ```
+	# git clone $somewhere
+	# cd linux-*
+	# make $runningconfig
+	# make ./fs/rpdfs/rpdfs.ko && insmod ./fs/rpdfs/rpdfs.ko
 	# mount -t rpdfs -o mkfs 127.0.0.1:8081 /mnt
 ```
 
@@ -43,12 +43,10 @@ builds over time.
 
 **shared/lk/**
 
-This is for userspace implementations of kernel interfaces.  This lets
-us use reasonably stand-alone kernel interfaces (list.h) in userspace
-by providing implementations of more complicated runtime services (RCU
-hash tables, work queues).
+This lets us use reasonably stand-alone kernel interfaces in userspace
+(list.h, endian swapping, bitops, etc).
 
-**shared/format-{block,msg,trace}.h**
+**shared/format-*.h**
 
 These headers contain the structures and protocol constants that are
 exposed to the world through storage on persistent media or by sending

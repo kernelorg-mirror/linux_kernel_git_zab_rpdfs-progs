@@ -5,6 +5,7 @@
 #include <linux/types.h>
 
 #include "shared/lk/compiler_attributes.h"
+#include "shared/lk/math.h"
 #include "shared/lk/types.h"
 
 enum {
@@ -16,6 +17,8 @@ enum {
 	RPDFS_MSG_BLOCK_GRANT_MODE,
 	RPDFS_MSG_BLOCK_REVOKE_MODE,
 	RPDFS_MSG_BLOCK_CONFIRM_MODE,
+	RPDFS_MSG_FREE_STRIPE_REQUEST,
+	RPDFS_MSG_FREE_STRIPE_GRANT,
 	RPDFS_MSG__NR,
 };
 
@@ -91,6 +94,51 @@ struct rpdfs_msg_cache_mode {
 	__le64 bnr;
 	__u8 mode;
 	__u8 _pad[7];
+};
+
+/*
+ * The bnr is the first fs bnr in the stripe that should be found on the
+ * receiving devd.  It is ignored (and must be 0) if _SEARCH is set
+ * which tells devd to find a free stripe rather than trying to get
+ * write grants in the specific stripe.
+ */
+struct rpdfs_msg_free_stripe_request {
+	__le64 bnr;
+	__u8 _pad[7];
+	__u8 flags;
+};
+#define RPDFS_MSG_FREE_STRIPE_REQUEST_FLAG_SEARCH	(1 << 0)
+
+/*
+ * This matches the number of dev_details entries in each details block
+ * in devd.
+ */
+#define RPDFS_MSG_BLOCKS_PER_FREE_STRIPE 127
+
+/*
+ * Each grant covers a fixed number of blocks.  The bmap indicates which
+ * covered block numbers are found in the details array in the data
+ * payload.
+ *
+ * The bnr is the first possible block number.
+ */
+struct rpdfs_msg_free_stripe_grant {
+	__le64 bnr;
+	__u8 _pad[7];
+	__u8 flags;
+	__le64 bmap[DIV_ROUND_UP(RPDFS_MSG_BLOCKS_PER_FREE_STRIPE, 64)];
+};
+
+#define RPDFS_MSG_FREE_STRIPE_GRANT_FLAG_SEARCH		(1 << 0)
+
+/*
+ * These are sent as the data payload in FREE_STRIPE_GRANT messages.
+ * The data size should reflect the number of bits set in the ctl's bmap
+ * bitmap.
+ */
+struct rpdfs_msg_free_stripe_detail {
+	__le64 alloc_ctr;
+	__le64 wcount;
 };
 
 #endif

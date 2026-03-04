@@ -281,6 +281,7 @@ static int send_read_result(struct client_block *clb, u8 mode, struct cached_blo
 	struct page *data_page;
 
 	rr.bnr = cpu_to_le64(clb->bnr);
+	rr.alloc_ctr = 0;
 	rr.wcount = 0;
 	rr.grant_mode = mode;
 	rr.err = rpdfs_msg_err(read_ret);
@@ -292,6 +293,7 @@ static int send_read_result(struct client_block *clb, u8 mode, struct cached_blo
 	data_page = NULL;
 
 	if (read_ret == 0) {
+		rr.alloc_ctr = det->alloc_ctr;
 		rr.wcount = det->write_ctr;
 		if (clb->read_data) {
 			hdr.data_size = cpu_to_le16(RPDFS_BLOCK_SIZE);

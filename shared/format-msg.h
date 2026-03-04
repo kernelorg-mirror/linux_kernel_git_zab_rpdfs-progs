@@ -66,6 +66,7 @@ struct rpdfs_msg_block_read {
 
 struct rpdfs_msg_block_read_result {
 	__le64 bnr;
+	__le64 alloc_ctr;
 	__le64 wcount;
 	__u8 grant_mode;
 	__u8 err;
@@ -74,6 +75,7 @@ struct rpdfs_msg_block_read_result {
 
 struct rpdfs_msg_block_write {
 	__le64 bnr;
+	__le64 alloc_ctr;
 	__le64 wcount;
 	__u8 confirm_mode;
 	__u8 _pad[7];

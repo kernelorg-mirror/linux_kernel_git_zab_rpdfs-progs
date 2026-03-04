@@ -98,7 +98,7 @@ struct rpdfs_dev_commit_block {
  * cost to check.)
  */
 struct rpdfs_block_details {
-	__le64 lifetime_ctr;
+	__le64 alloc_ctr;
 	__le64 write_ctr;
 	__le32 crc;
 	__u8 _pad[3];

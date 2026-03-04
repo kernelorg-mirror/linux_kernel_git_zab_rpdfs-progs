@@ -105,6 +105,7 @@ static void block_write_utask(void *data)
 	const u64 bnr = le64_to_cpu(bw->bnr);
 	int ret;
 
+	in_det.alloc_ctr = bw->alloc_ctr;
 	in_det.write_ctr = bw->wcount;
 
 	ret = bstore_write(bnr, preq->data_page, &in_det);

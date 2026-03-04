@@ -1032,10 +1032,8 @@ int bstore_write(u64 dev_bnr, struct page *data_page, struct rpdfs_block_details
 		    NULL, det_cblk, &cblk);
 	dblk = block_data_buf(cblk);
 	det = &dblk->details[map.details_ind];
+	det->alloc_ctr = in_det->alloc_ctr;
 	det->write_ctr = in_det->write_ctr;
-	/* don't have alloc/free */
-	if (det->lifetime_ctr == 0)
-		le64_add_cpu(&det->lifetime_ctr, 1);
 	block_putp(&cblk);
 
 	/* make sure we have a dirty summary block for write-time updates */
@@ -1045,7 +1043,7 @@ int bstore_write(u64 dev_bnr, struct page *data_page, struct rpdfs_block_details
 
 	/* and dirty the stored block with a reference to the data page */
 	dirty_block(inst, cmt, &pool, map.lba, RPDFS_DEV_BLOCK_TYPE_STORED,
-		    !(le64_to_cpu(stable_det->lifetime_ctr) & 1), data_page, NULL, &cblk);
+		    !(le64_to_cpu(stable_det->alloc_ctr) & 1), data_page, NULL, &cblk);
 	block_putp(&cblk);
 
 	ret = finish_dirty_commit(inst, &pool);

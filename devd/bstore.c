@@ -19,12 +19,12 @@
 #include "shared/format-dev.h"
 #include "shared/hash_table.h"
 #include "shared/string_wrappers.h"
-#include "shared/summary_tree.h"
 
 #include "utask/block.h"
 #include "utask/utask.h"
 
 #include "devd/bstore.h"
+#include "devd/free-map.h"
 
 /*
  * This block store sits between devd request processing and the block
@@ -74,7 +74,6 @@
 static struct bstore_instance {
 	struct hash_table *stable_ht;
 	struct hash_table *dirty_ht;
-	struct summary_tree *smt;
 	struct rpdfs_uuid dev_uuid;
 	bool have_uuid;
 	struct rpdfs_dev_commit_block stable_cmt;
@@ -150,6 +149,17 @@ static void map_details_lba(struct bstore_instance *inst, struct dev_bnr_mapping
 
 	ret = map_dev_bnr(inst, map, dev_bnr);
 	BUG_ON(ret < 0); /* dirty commit should have valid lbas */
+}
+
+static void map_summary_lba(struct bstore_instance *inst, struct dev_bnr_mapping *map,
+			    u64 summary_lba)
+{
+	u64 dev_bnr = (summary_lba - inst->summary_lba) * RPDFS_DEV_SUMMARIES_PER_BLOCK *
+			RPDFS_DEV_DETAILS_PER_BLOCK;
+	int ret;
+
+	ret = map_dev_bnr(inst, map, dev_bnr);
+	BUG_ON(ret < 0);
 }
 
 static u64 stable_commit_ctr(struct bstore_instance *inst)
@@ -567,69 +577,50 @@ static void already_dirty_block(struct bstore_instance *inst, u64 lba, struct ca
 	BUG_ON(ret < 0);
 }
 
-/*
- * We accelerate searching for stored blocks by maintaining a tree of
- * summaries of their block details.  The lowest levels are in
- * persistent blocks because they're large enough to not reasonably fit
- * in memory.  Above those we maintain a tree in memory.
- */
-static u64 summarize_smt_words(u64 *words, unsigned short nr)
+static void summarize_details_block(struct rpdfs_dev_details_block *dblk,
+				    struct rpdfs_dev_summary *summary)
 {
-	u64 summary = 0;
 	int i;
 
-	for (i = 0; i < nr; i++)
-		summary = max(summary, words[i]);
+	summary->alloc_count = 0;
 
-	return summary;
+	for (i = 0; i < RPDFS_DEV_DETAILS_PER_BLOCK; i++) {
+		if (le64_to_cpu(dblk->details[i].alloc_ctr) & 1)
+			summary->alloc_count++;
+	}
 }
 
-static u64 summarize_summary_block(struct rpdfs_dev_summary_block *sblk)
+static void set_free_count(u64 bnr, struct rpdfs_dev_summary_block *sblk, unsigned int i)
 {
-	u64 summary = 0;
-	int i;
-
-	for (i = 0; i < RPDFS_DEV_SUMMARIES_PER_BLOCK; i++)
-		summary = max(summary, le64_to_cpu(sblk->summaries[i]));
-
-	return summary;
-}
-
-static u64 summarize_details_block(struct rpdfs_dev_details_block *dblk)
-{
-	u64 summary = 0;
-	int i;
-
-	for (i = 0; i < RPDFS_DEV_DETAILS_PER_BLOCK; i++)
-		summary = max(summary, le64_to_cpu(dblk->details[i].write_ctr));
-
-	return summary;
+	free_map_set_free(bnr, RPDFS_DEV_DETAILS_PER_BLOCK  - sblk->summaries[i].alloc_count);
 }
 
 /*
- * Update the in-memory tracking of the summary of a summary block.
+ * Called for each details block that was written in the commit.  We
+ * look up its summary entry in its summary block that must also have
+ * been written.  We set that free count in the free-map.
+ *
+ * This is called post write in the commit before the written dirty
+ * blocks have been cleaned.
  */
-static int update_summary_block(struct bstore_instance *inst, u64 lba)
+static void set_details_free(struct bstore_instance *inst, u64 det_lba)
 {
 	struct rpdfs_dev_summary_block *sblk;
-	struct cached_block *cblk;
-	u64 summary;
-	u64 pos;
-	int ret;
+	struct cached_block *sum_cblk;
+	struct dev_bnr_mapping map;
+	u64 bnr;
 
-	ret = read_block_hdr(inst, stable_lba(inst, lba), RPDFS_DEV_BLOCK_TYPE_SUMMARY, &cblk);
-	if (ret < 0)
-		goto out;
+	map_details_lba(inst, &map, det_lba);
 
-	sblk = block_data_buf(cblk);
-	summary = summarize_summary_block(sblk);
-	block_put(cblk);
+	already_dirty_block(inst, map.summary_lba, &sum_cblk);
+	sblk = block_data_buf(sum_cblk);
 
-	pos = lba - inst->summary_lba;
-	smtree_set(inst->smt, summarize_smt_words, pos, summary);
-	ret = 0;
-out:
-	return ret;
+	/* XXX dev_bnr == fs bnr today.. this needs some cleanup */
+	bnr = map.lba - inst->storage_lba;
+
+	set_free_count(bnr, sblk, map.summary_ind);
+
+	block_put(sum_cblk);
 }
 
 /*
@@ -658,34 +649,26 @@ static void update_commit_lbas(struct bstore_instance *inst, struct rpdfs_dev_co
 }
 
 /*
- * Update the summary tracking of all the summary blocks that changed in
- * a commit.  This is only run as commits are successfully written.
+ * This is called before the stable_ht is updated so the committed
+ * blocks can be acquired with already_dirty_block.
  */
-static int update_commit_summaries(struct bstore_instance *inst,
-				   struct rpdfs_dev_commit_block *cmt)
+static void update_committed_blocks(struct bstore_instance *inst,
+				    struct rpdfs_dev_commit_block *cmt)
 {
 	struct rpdfs_dev_commit_entry *ent;
-	int ret;
 	int i;
 
 	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
 		ent = &cmt->entries[i];
 
-		if (ent->type == RPDFS_DEV_BLOCK_TYPE_SUMMARY) {
-			ret = update_summary_block(inst, le64_to_cpu(ent->lba));
-			if (ret < 0)
-				goto out;
-		}
+		if (ent->type == RPDFS_DEV_BLOCK_TYPE_DETAILS)
+			set_details_free(inst, le64_to_cpu(ent->lba));
 	}
-
-	ret = 0;
-out:
-	return ret;
 }
 
 /*
  * The current dirty commit modified the given details block.  Update
- * its word in its summaries block.
+ * its entry in its summary block.
  */
 static void update_dirty_summary(struct bstore_instance *inst, u64 det_lba)
 {
@@ -703,7 +686,7 @@ static void update_dirty_summary(struct bstore_instance *inst, u64 det_lba)
 	dblk = block_data_buf(det_cblk);
 	sblk = block_data_buf(sum_cblk);
 
-	sblk->summaries[map.summary_ind] = cpu_to_le64(summarize_details_block(dblk));
+	summarize_details_block(dblk, &sblk->summaries[map.summary_ind]);
 
 	block_put(det_cblk);
 	block_put(sum_cblk);
@@ -774,9 +757,8 @@ static void write_dirty_commit(struct bstore_instance *inst, struct rpdfs_dev_co
 
 	ret = block_write_all_dirty();
 	if (ret == 0) {
+		update_committed_blocks(inst, cmt);
 		update_commit_lbas(inst, cmt);
-		ret = update_commit_summaries(inst, cmt);
-		BUG_ON(ret < 0); /* reading pinned dirty blocks shouldn't fail */
 		inst->stable_cmt = *cmt;
 	}
 
@@ -1264,12 +1246,6 @@ static int init_journal(struct bstore_instance *inst)
 		goto out;
 	}
 
-	inst->smt = smtree_alloc(8, summary_blocks);
-	if (!inst->smt) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
 	inst->journal_lba = inst->commit_blocks;
 	inst->summary_lba = inst->journal_lba + journal_blocks;
 	inst->details_lba = inst->summary_lba + summary_blocks;
@@ -1325,6 +1301,34 @@ out:
 	return ret;
 }
 
+static int load_summary_block(struct bstore_instance *inst, u64 lba)
+{
+	struct rpdfs_dev_summary_block *sblk;
+	struct dev_bnr_mapping map;
+	struct cached_block *cblk;
+	u64 bnr;
+	int i;
+	int ret;
+
+	map_summary_lba(inst, &map, lba);
+	bnr = map.lba - inst->storage_lba;
+
+	ret = read_block_hdr(inst, stable_lba(inst, lba), RPDFS_DEV_BLOCK_TYPE_SUMMARY, &cblk);
+	if (ret < 0)
+		goto out;
+
+	sblk = block_data_buf(cblk);
+	for (i = 0; i < RPDFS_DEV_SUMMARIES_PER_BLOCK; i++, bnr += RPDFS_DEV_DETAILS_PER_BLOCK) {
+		if (sblk->summaries[i].alloc_count != RPDFS_DEV_DETAILS_PER_BLOCK)
+			set_free_count(bnr, sblk, i);
+	}
+	block_put(cblk);
+
+	ret = 0;
+out:
+	return ret;
+}
+
 static int load_summary_blocks(struct bstore_instance *inst)
 {
 	u64 lba;
@@ -1333,7 +1337,7 @@ static int load_summary_blocks(struct bstore_instance *inst)
 	for (lba = inst->summary_lba; lba < inst->details_lba; lba++) {
 		readahead_batch(lba, 16, inst->details_lba, 1);
 
-		ret = update_summary_block(inst, lba);
+		ret = load_summary_block(inst, lba);
 		if (ret < 0)
 			break;
 	}

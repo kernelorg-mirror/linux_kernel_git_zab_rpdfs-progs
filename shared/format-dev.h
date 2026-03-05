@@ -100,6 +100,7 @@ struct rpdfs_dev_commit_block {
 struct rpdfs_block_details {
 	__le64 alloc_ctr;
 	__le64 write_ctr;
+	__le64 __owner; /* NYI, but reserving space to fit details_per_block in s8 */
 	__le32 crc;
 	__u8 _pad[3];
 	__u8 type;
@@ -116,11 +117,20 @@ struct rpdfs_dev_details_block {
 
 struct rpdfs_dev_summary_block {
 	struct rpdfs_dev_block_header hdr;
-	__le64 summaries[0];
+	struct rpdfs_dev_summary {
+		/*
+		 * The total number of entries in the details block that
+		 * have an odd alloc_ctr which indicates that they're
+		 * allocated and referenced.  Tracks alloc, instead of
+		 * free, so that formatting's zeroed summary blocks
+		 * correctly summarize zeroed details blocks.
+		 */
+		u8 alloc_count;
+	} summaries[];
 };
 
 #define RPDFS_DEV_SUMMARIES_PER_BLOCK					\
 	((RPDFS_BLOCK_SIZE - sizeof(struct rpdfs_dev_summary_block)) /	\
-	 sizeof(__le64))
+	 sizeof(struct rpdfs_dev_summary))
 
 #endif

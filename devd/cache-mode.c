@@ -159,6 +159,52 @@ static bool only_client_with_block(struct client_block *clb)
 	       (!(nei = prev_clb(clb)) || nei->bnr != clb->bnr);
 }
 
+static struct client_block *alloc_client_block(struct sockaddr_in *addr, u64 bnr)
+{
+	struct client_block *clb;
+
+	clb = calloc(1, sizeof(struct client_block));
+	if (!clb)
+		return ERR_PTR(-ENOMEM);
+
+	clb->bnr = bnr;
+	clb_addr_from_sin(clb, addr);
+
+	return clb;
+}
+
+static void insert_client_block(struct cache_mode_instance *inst, struct client_block *clb,
+				struct rb_node *parent, struct rb_node **link)
+{
+	rb_link_node(&clb->node, parent, link);
+	rb_insert_color(&clb->node, &inst->client_blocks_root);
+
+	if (only_client_with_block(clb))
+		free_map_add_cached(clb->bnr, 1);
+}
+
+/*
+ * A node with ins's position can't exist in the tree.  prev and next
+ * must be the existing nodes in the tree that immediately precede or
+ * follow ins, if they exist.  With that, we'll always have a null link
+ * towards ins unless the tree is empty and we insert at the root.
+ *
+ * (f.e. consider next.  It can have left link, but ins isn't in the
+ * tree.  Any left child has to be less than next.  So it must be prev.
+ * Then that prev can't have a right link, 'cause the only node greater
+ * than it and less than next must be ins.)
+ */
+static void insert_between(struct cache_mode_instance *inst, struct client_block *prev,
+			   struct client_block *ins, struct client_block *next)
+{
+	if (prev && !prev->node.rb_right)
+		insert_client_block(inst, ins, &prev->node, &prev->node.rb_right);
+	else if (next && !next->node.rb_left)
+		insert_client_block(inst, ins, &next->node, &next->node.rb_left);
+	else
+		insert_client_block(inst, ins, NULL, &inst->client_blocks_root.rb_node);
+}
+
 static struct client_block *search_client_blocks(struct cache_mode_instance *inst,
 						 struct sockaddr_in *addr, u64 bnr,
 						 bool alloc, struct client_block **next)
@@ -192,20 +238,10 @@ static struct client_block *search_client_blocks(struct cache_mode_instance *ins
 	}
 
 	if (!clb && alloc) {
-		clb = calloc(1, sizeof(struct client_block));
-		if (clb) {
-			clb->bnr = bnr;
-			clb_addr_from_sin(clb, addr);
-
-			rb_link_node(&clb->node, parent, link);
-			rb_insert_color(&clb->node, &inst->client_blocks_root);
-
-			if (only_client_with_block(clb))
-				free_map_add_cached(clb->bnr, 1);
-
+		clb = alloc_client_block(addr, bnr);
+		if (!IS_ERR(clb)) {
+			insert_client_block(inst, clb, parent, link);
 			dtracef("cache_mode_alloc", "clb %p "CLB_FMT, clb, CLB_ARG(clb));
-		} else {
-			clb = ERR_PTR(-ENOMEM);
 		}
 	}
 
@@ -223,7 +259,6 @@ static void try_free_null_client_block(struct cache_mode_instance *inst, struct 
 		free(clb);
 	}
 }
-
 
 static struct client_block *first_client_block(struct cache_mode_instance *inst, u64 bnr)
 {
@@ -512,6 +547,103 @@ int cache_mode_confirm(struct sockaddr_in *addr, u64 bnr, u8 mode)
 out:
 	process_requests(inst, bnr);
 	return ret;
+}
+
+/*
+ * For each block, grant the client the given mode if the block is not
+ * cached by any clients.
+ *
+ * The caller's bitmap defines the blocks to try and grant, relative to
+ * the bmap_bnr.  If a requested block is already cached we clear its
+ * bit in the caller's bmap.  We return the number of blocks granted
+ * (matching the remaining number of set bits on return).
+ *
+ * We only modify the in-memory tracking of the grants.  The caller is
+ * sending a message that communicates the grants.  If they can't send
+ * the grants then they call back in to undo the grants.
+ */
+int cache_mode_grant_bulk_uncached(struct sockaddr_in *addr, int mode, u64 bmap_bnr,
+				   unsigned long *bmap, size_t size)
+{
+	struct cache_mode_instance *inst = &global_cache_mode_inst;
+	static struct sockaddr_in zero_addr = {0, };
+	struct client_block *prev;
+	struct client_block *ins;
+	struct client_block *clb;
+	size_t undo_size = 0;
+	unsigned long b;
+	int count = 0;
+	int ret;
+
+	/* so we don't accidentally grant null/none, wouldn't make sense */
+	if (WARN_ON_ONCE(mode < RPDFS_CACHE_MODE_READ))
+		return -EINVAL;
+
+	b = find_next_bit(bmap, size, 0);
+	search_client_blocks(inst, &zero_addr, bmap_bnr, false, &clb);
+	prev = prev_clb(clb);
+
+	while (b < size) {
+		/* grant mode for uncached set bits */
+		while (b < size && (!clb || (bmap_bnr + b < clb->bnr))) {
+			ins = alloc_client_block(addr, bmap_bnr + b);
+			if (IS_ERR(ins)) {
+				ret = PTR_ERR(ins);
+				goto out;
+			}
+
+			ins->grant = mode;
+
+			insert_between(inst, prev, ins, clb);
+			prev = ins;
+			undo_size = b + 1;
+			count++;
+
+			b = find_next_bit(bmap, size, b + 1);
+		}
+
+		/* clear cached bits */
+		if (b < size && (clb && (bmap_bnr + b == clb->bnr))) {
+			clear_bit(b, bmap);
+			b = find_next_bit(bmap, size, b + 1);
+		}
+
+		/* always advance the cached bnr.. could be many clients */
+		do {
+			prev = clb;
+			clb = next_clb(prev);
+		} while (prev && clb && prev->bnr == clb->bnr);
+	}
+
+	ret = 0;
+out:
+	if (ret < 0 && undo_size > 0)
+		cache_mode_undo_bulk_grant(addr, bmap_bnr, bmap, undo_size);
+
+	return ret ?: count;
+}
+
+/*
+ * This slow error path undoes the grants that were just created by
+ * _grant_bulk_uncached.  Nothing else should have happened since.  We
+ * must find the granted blocks and they should only have their grant
+ * mode set.
+ */
+void cache_mode_undo_bulk_grant(struct sockaddr_in *addr, u64 bnr,
+				unsigned long *bmap, size_t size)
+{
+	struct cache_mode_instance *inst = &global_cache_mode_inst;
+	struct client_block *clb;
+	unsigned long b;
+
+	for (b = 0; (b = find_next_bit(bmap, size, b)) < size; b++) {
+		clb = search_client_blocks(inst, addr, bnr + b, false, NULL);
+		BUG_ON(IS_ERR_OR_NULL(clb));
+
+		clb->grant = RPDFS_CACHE_MODE_NULL;
+
+		try_free_null_client_block(inst, clb);
+	}
 }
 
 int cache_mode_init(void)

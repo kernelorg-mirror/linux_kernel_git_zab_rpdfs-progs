@@ -1403,7 +1403,11 @@ static int load_summary_blocks(struct bstore_instance *inst)
 	return ret;
 }
 
-int bstore_init(void)
+/*
+ * The static configuration of the free map stripes will go away when we
+ * have dynamic quorum updates.
+ */
+int bstore_init(u64 stripe_size, u64 nr_stripes, u64 my_stripe)
 {
 	struct bstore_instance *inst = &global_bstore_inst;
 	u64 commit_ctr;
@@ -1419,6 +1423,7 @@ int bstore_init(void)
 	}
 
 	ret = init_journal(inst) ?:
+	      free_map_init(inst->storage_blocks, stripe_size, nr_stripes, my_stripe) ?:
 	      find_stable_commit(inst, &commit_ctr) ?:
 	      load_commit_blocks(inst, commit_ctr) ?:
 	      load_summary_blocks(inst) ?:

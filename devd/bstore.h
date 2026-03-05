@@ -12,7 +12,7 @@ int bstore_write(u64 dev_bnr, struct page *data_page, struct rpdfs_block_details
 int bstore_get_free_details(u64 bnr, unsigned long *bmap,
 			    struct rpdfs_msg_free_stripe_detail *fsd, size_t size);
 
-int bstore_init(void);
+int bstore_init(u64 stripe_size, u64 nr_stripes, u64 my_stripe);
 void bstore_exit(void);
 
 #endif

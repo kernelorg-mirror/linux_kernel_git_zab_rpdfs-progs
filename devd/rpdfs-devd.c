@@ -17,6 +17,7 @@
 #include <systemd/sd-daemon.h>
 
 #include "shared/dtracef.h"
+#include "shared/format-dev.h"
 #include "shared/lk/err.h"
 #include "shared/lk/kernel.h"
 #include "shared/log.h"
@@ -31,12 +32,15 @@
 
 #include "devd/bstore.h"
 #include "devd/cache-mode.h"
+#include "devd/free-map.h"
 #include "devd/proc.h"
 
 struct devd_options {
 	char *dev_path;
 	struct sockaddr_in listen_addr;
 	char *trace_path;
+	u64 nr_devds;
+	u64 this_devd_pos;
 };
 
 static struct option_more devd_moreopts[] = {
@@ -48,6 +52,16 @@ static struct option_more devd_moreopts[] = {
 	{ .longopt = { "listen_addr", required_argument, NULL, 'l' },
 	  .arg = "addr:port",
 	  .desc = "listening IPv4 address and port",
+	  .required = 1, },
+
+	{ .longopt = { "nr_devds", required_argument, NULL, 'n' },
+	  .arg = "nr",
+	  .desc = "total number of devds in fleet",
+	  .required = 1, },
+
+	{ .longopt = { "this_devd_pos", required_argument, NULL, 'p' },
+	  .arg = "nr",
+	  .desc = "position of this devd in fleet, from 0 to nr - 1",
 	  .required = 1, },
 
 	{ .longopt = { "trace_file", required_argument, NULL, 't' },
@@ -67,6 +81,12 @@ static int parse_devd_opt(int c, char *str, void *arg)
 		break;
 	case 'l':
 		ret = parse_ipv4_addr_port(&opts->listen_addr, str);
+		break;
+	case 'n':
+		ret = strtoull_nerr(&opts->nr_devds, str, NULL, 0);
+		break;
+	case 'p':
+		ret = strtoull_nerr(&opts->this_devd_pos, str, NULL, 0);
 		break;
 	case 't':
 		ret = strdup_nerr(&opts->trace_path, str);
@@ -112,7 +132,7 @@ static void main_utask(void *data)
 		goto out;
 
 	ret = block_init(dm->opts.dev_path, BLOCK_QUEUE_DEPTH) ?:
-	      bstore_init() ?:
+	      bstore_init(RPDFS_DEV_DETAILS_PER_BLOCK, dm->opts.nr_devds, dm->opts.this_devd_pos) ?:
 	      net_init() ?:
 	      cache_mode_init() ?:
 	      net_register_recv(proc_recv) ?:
@@ -124,6 +144,7 @@ static void main_utask(void *data)
 	net_exit();
 	bstore_exit();
 	block_exit();
+	free_map_exit();
 	sigcb_free(sigcb);
 out:
 	utask_shutdown();
@@ -138,8 +159,20 @@ int main(int argc, char **argv)
 
 	/* setup the most basic subsystems */
 	ret = getopt_long_more(argc, argv, devd_moreopts, ARRAY_SIZE(devd_moreopts),
-			       parse_devd_opt, &dm.opts) ?:
-	      (dm.opts.trace_path ? dtracef_init(dm.opts.trace_path) : 0) ?:
+			       parse_devd_opt, &dm.opts);
+	if (ret < 0)
+		goto out;
+
+	/* arbitrary devd limit *shrug* */
+	if (dm.opts.nr_devds == 0 || dm.opts.nr_devds > 16 ||
+	    dm.opts.nr_devds <= dm.opts.this_devd_pos) {
+		printf("nr_devds (-n %llu) must be > 0 and <= 16, and greater than this_devd_pos (-p %llu)\n",
+			dm.opts.nr_devds, dm.opts.this_devd_pos);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	ret = (dm.opts.trace_path ? dtracef_init(dm.opts.trace_path) : 0) ?:
 	      utask_init(BLOCK_QUEUE_DEPTH + NET_QUEUE_DEPTH);
 	if (ret < 0)
 		goto out;

@@ -6,6 +6,8 @@
 #include "shared/lk/limits.h"
 #include "shared/lk/types.h"
 
+#include "shared/format-block.h"
+
 /*
  * This describes the structs that are only found in devices.  They're
  * used by devd to manage the blocks that are served over the network.

@@ -182,7 +182,11 @@ static bool entry_bits_fit(s64 ind, s64 diff)
 	return dummy.ind == ind && dummy.diff == diff;
 }
 
-int free_map_setup(u64 blocks, u64 stripe_size, u64 nr_stripes, u64 my_stripe)
+/*
+ * The free map geometry is static for now.  Eventually we'll associate
+ * it with versions of quorum updates.
+ */
+int free_map_init(u64 blocks, u64 stripe_size, u64 nr_stripes, u64 my_stripe)
 {
 	struct free_map_instance *inst = &global_free_map_inst;
 	int ret;
@@ -211,4 +215,13 @@ int free_map_setup(u64 blocks, u64 stripe_size, u64 nr_stripes, u64 my_stripe)
 	ret = 0;
 out:
 	return ret;
+}
+
+void free_map_exit(void)
+{
+	struct free_map_instance *inst = &global_free_map_inst;
+
+	free(inst->tourn);
+	free(inst->counts);
+	memset(inst, 0, sizeof(struct free_map_instance));
 }

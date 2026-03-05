@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <netinet/in.h>
 
+#include "shared/lk/bitops-le.h"
 #include "shared/lk/bug.h"
 #include "shared/lk/byteorder.h"
 #include "shared/lk/crc64.h"
@@ -1036,6 +1037,63 @@ out:
 
 	dtracef("bstore_write", "dev_bnr %llu ret %d", dev_bnr, ret);
 	return ret;
+}
+
+/*
+ * Fill in the caller's details for free blocks in the caller's region.
+ * The interface is pretty generic, but in practice the use is tuned to
+ * align to single details blocks.
+ */
+int bstore_get_free_details(u64 bnr, unsigned long *bmap,
+			    struct rpdfs_msg_free_stripe_detail *fsd, size_t size)
+{
+	struct bstore_instance *inst = &global_bstore_inst;
+	struct rpdfs_dev_details_block *dblk;
+	struct rpdfs_block_details *det;
+	struct cached_block *cblk = NULL;
+	struct dev_bnr_mapping map;
+	int count = 0;
+	u64 ctr;
+	int ret;
+	int i;
+
+	ret = map_dev_bnr(inst, &map, bnr);
+	if (ret < 0)
+		goto out;
+
+	if (map.details_ind != 0 || size > RPDFS_DEV_DETAILS_PER_BLOCK) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	do {
+		ctr = stable_commit_ctr(inst);
+
+		ret = read_block_hdr(inst, stable_lba(inst, map.details_lba),
+				     RPDFS_DEV_BLOCK_TYPE_DETAILS, &cblk);
+
+	} while (stable_commit_ctr(inst) != ctr);
+	if (ret < 0)
+		goto out;
+
+	dblk = block_data_buf(cblk);
+
+	/* don't advertise bnr 0 */
+	for (i = map.bnr == 0 ? 1 : 0; i < size; i++) {
+		det = &dblk->details[map.details_ind + i];
+
+		if (!(le64_to_cpu(det->alloc_ctr) & 1)) {
+			set_bit(i, bmap);
+			fsd[i].alloc_ctr = det->alloc_ctr;
+			fsd[i].wcount = det->write_ctr;
+			count++;
+		};
+	}
+
+	ret = 0;
+out:
+	block_putp(&cblk);
+	return ret ?: count;
 }
 
 /*

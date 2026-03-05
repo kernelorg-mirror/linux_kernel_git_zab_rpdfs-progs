@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <netinet/in.h>
 
+#include "shared/lk/bitops-le.h"
 #include "shared/lk/bug.h"
 #include "shared/lk/byteorder.h"
 #include "shared/lk/err.h"
@@ -19,6 +20,7 @@
 
 #include "devd/cache-mode.h"
 #include "devd/bstore.h"
+#include "devd/free-map.h"
 #include "devd/proc.h"
 
 /*
@@ -41,15 +43,21 @@ static void free_proc_request(struct proc_request *preq)
 	}
 }
 
-static int send_ctl(struct sockaddr_in *addr, u8 type, void *ctl_buf, u8 ctl_size)
+static int send_hdr(struct sockaddr_in *addr, u8 type, void *ctl_buf, u8 ctl_size,
+		    struct page *data_page, u16 data_size)
 {
 	struct rpdfs_msg_header hdr = {
-		.data_size = 0,
+		.data_size = cpu_to_le16(data_size),
 		.ctl_size = ctl_size,
 		.type = type,
 	};
 
-	return net_send(addr, &hdr, ctl_buf, NULL);
+	return net_send(addr, &hdr, ctl_buf, data_page);
+}
+
+static int send_ctl(struct sockaddr_in *addr, u8 type, void *ctl_buf, u8 ctl_size)
+{
+	return send_hdr(addr, type, ctl_buf, ctl_size, NULL, 0);
 }
 
 /*
@@ -157,11 +165,77 @@ static void block_confirm_mode_utask(void *data)
 	free_proc_request(preq);
 }
 
+static void free_stripe_request_utask(void *data)
+{
+	struct proc_request *preq = data;
+	struct rpdfs_msg_free_stripe_request *fsr = preq->ctl_buf;
+	const size_t stripe_size = RPDFS_MSG_BLOCKS_PER_FREE_STRIPE;
+	struct rpdfs_msg_free_stripe_detail *fsd;
+	struct rpdfs_msg_free_stripe_grant fsg;
+	struct page *data_page = NULL;
+	unsigned long *bmap = NULL;
+	u16 data_size;
+	u64 bnr;
+	int b;
+	int i;
+	int ret;
+
+	memset(&fsg, 0, sizeof(struct rpdfs_msg_free_stripe_grant));
+
+	if (fsr->flags & RPDFS_MSG_FREE_STRIPE_REQUEST_FLAG_SEARCH) {
+		fsg.flags = RPDFS_MSG_FREE_STRIPE_GRANT_FLAG_SEARCH;
+		ret = free_map_find_first_most(&bnr);
+		BUG_ON(ret);
+	} else {
+		bnr = le64_to_cpu(fsr->bnr);
+	}
+	fsg.bnr = cpu_to_le64(bnr);
+
+	bmap = calloc(DIV_ROUND_UP(stripe_size, BITS_PER_LONG), sizeof(bmap[0]));
+	data_page = alloc_page(GFP_NOFS);
+	if (!bmap || !data_page) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	fsd = page_address(data_page);
+
+	ret = bstore_get_free_details(bnr, bmap, fsd, stripe_size);
+	if (ret > 0)
+		ret = cache_mode_grant_bulk_uncached(&preq->addr, RPDFS_CACHE_MODE_WRITE, bnr,
+						     bmap, stripe_size);
+	if (ret < 0)
+		goto out;
+
+	/* translate our native bmap into le and collapse the details */
+	for (b = 0, i = 0; (b = find_next_bit(bmap, stripe_size, b)) < stripe_size; b++, i++) {
+		set_bit_le(b, fsg.bmap);
+		if (i != b)
+			fsd[i] = fsd[b];
+	}
+	data_size = i * sizeof(fsd[0]);
+
+	ret = send_hdr(&preq->addr, RPDFS_MSG_FREE_STRIPE_GRANT, &fsg, sizeof(fsg),
+		       data_page, data_size);
+	if (ret < 0) {
+		cache_mode_undo_bulk_grant(&preq->addr, bnr, bmap, stripe_size);
+		goto out;
+	}
+
+	ret = 0;
+out:
+	free(bmap);
+	if (data_page)
+		put_page(data_page);
+
+	free_proc_request(preq);
+}
+
 static utask_fn_t proc_utask_fns[] = {
 	[RPDFS_MSG_BLOCK_READ] = block_read_utask,
 	[RPDFS_MSG_BLOCK_WRITE] = block_write_utask,
 	[RPDFS_MSG_BLOCK_REQUEST_MODE] = block_request_mode_utask,
 	[RPDFS_MSG_BLOCK_CONFIRM_MODE] = block_confirm_mode_utask,
+	[RPDFS_MSG_FREE_STRIPE_REQUEST] = free_stripe_request_utask,
 };
 
 /*

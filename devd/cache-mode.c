@@ -27,6 +27,7 @@
 
 #include "devd/bstore.h"
 #include "devd/cache-mode.h"
+#include "devd/free-map.h"
 
 /*
  * This governs the cached block modes that clients are allowed in their
@@ -135,6 +136,29 @@ static int cmp_client_blocks(struct client_block *a, struct client_block *b)
 	       rpdfs_compare(a->ipv4_port, b->ipv4_port);
 }
 
+static inline struct client_block *clb_container(struct rb_node *node)
+{
+	return node ? container_of(node, struct client_block, node) : NULL;
+}
+
+static inline struct client_block *next_clb(struct client_block *clb)
+{
+	return clb ? clb_container(rb_next(&clb->node)) : NULL;
+}
+
+static inline struct client_block *prev_clb(struct client_block *clb)
+{
+	return clb ? clb_container(rb_prev(&clb->node)) : NULL;
+}
+
+static bool only_client_with_block(struct client_block *clb)
+{
+	struct client_block *nei;
+
+	return (!(nei = next_clb(clb)) || nei->bnr != clb->bnr) &&
+	       (!(nei = prev_clb(clb)) || nei->bnr != clb->bnr);
+}
+
 static struct client_block *search_client_blocks(struct cache_mode_instance *inst,
 						 struct sockaddr_in *addr, u64 bnr,
 						 bool alloc, struct client_block **next)
@@ -176,6 +200,9 @@ static struct client_block *search_client_blocks(struct cache_mode_instance *ins
 			rb_link_node(&clb->node, parent, link);
 			rb_insert_color(&clb->node, &inst->client_blocks_root);
 
+			if (only_client_with_block(clb))
+				free_map_add_cached(clb->bnr, 1);
+
 			dtracef("cache_mode_alloc", "clb %p "CLB_FMT, clb, CLB_ARG(clb));
 		} else {
 			clb = ERR_PTR(-ENOMEM);
@@ -189,21 +216,14 @@ static void try_free_null_client_block(struct cache_mode_instance *inst, struct 
 {
 	if (clb->request == RPDFS_CACHE_MODE_NULL && clb->grant == RPDFS_CACHE_MODE_NULL &&
 	    clb->revoke == RPDFS_CACHE_MODE_NULL) {
+		if (only_client_with_block(clb))
+			free_map_add_cached(clb->bnr, -1);
 		rb_erase(&clb->node, &inst->client_blocks_root);
 		dtracef("cache_mode_free", "clb %p "CLB_FMT, clb, CLB_ARG(clb));
 		free(clb);
 	}
 }
 
-static inline struct client_block *clb_container(struct rb_node *node)
-{
-	return node ? container_of(node, struct client_block, node) : NULL;
-}
-
-static inline struct client_block *next_clb(struct client_block *clb)
-{
-	return clb ? clb_container(rb_next(&clb->node)) : NULL;
-}
 
 static struct client_block *first_client_block(struct cache_mode_instance *inst, u64 bnr)
 {

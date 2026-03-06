@@ -79,6 +79,10 @@ static struct bstore_instance {
 	bool have_uuid;
 	struct rpdfs_dev_commit_block stable_cmt;
 
+	/* we'll want these versioned with the qlists */
+	u64 nr_devds;
+	u64 this_devd_pos;
+
 	/* convenience, set from commit layout at init */
 	u64 commit_blocks;
 	u64 journal_lba;
@@ -107,28 +111,37 @@ static struct bstore_instance {
 };
 
 /*
- * All the static block addresses and block array indexes associated
- * with a given dev_bnr.
+ * All the device coordinates for blocks associated with the fs bnr.
  */
-struct dev_bnr_mapping {
-	u64 lba;
-	u64 details_lba;
-	u64 summary_lba;
-	unsigned int details_ind;
-	unsigned int summary_ind;
+struct bnr_lba_mapping {
+	u64 bnr;			/* fs bnr from the wire */
+	u64 lba;			/* device lba of fs bnr */
+	u64 details_lba;		/* lba of details block that describes bnr block */
+	u64 summary_lba;		/* lba of summary block that descubes details block */
+	unsigned int details_ind;	/* entry index in details block that describes bnr */
+	unsigned int summary_ind;	/* entry index in summary block that describes details */
 };
 
-static int map_dev_bnr(struct bstore_instance *inst, struct dev_bnr_mapping *map, u64 dev_bnr)
+/*
+ * fs bnrs are round-robined across devds.  We, a devd, will only see
+ * our fraction of the fs bnrs.  If we were the second (index 1) devd,
+ * and there are 4 devds, we'd see bnr {1, 5, 9, ...} and we map those
+ * to the contiguous lbas starting at the first storage lba on the
+ * device.
+ */
+static int map_bnr(struct bstore_instance *inst, struct bnr_lba_mapping *map, u64 bnr)
 {
 	u64 off;
 
-	if (dev_bnr >= inst->storage_blocks)
+	off = (bnr - inst->this_devd_pos) / inst->nr_devds;
+	if (off >= inst->storage_blocks)
 		return -EINVAL;
 
-	map->lba = inst->storage_lba + dev_bnr;
+	map->bnr = bnr;
+	map->lba = inst->storage_lba + off;
 
-	map->details_lba = inst->details_lba + (dev_bnr / RPDFS_DEV_DETAILS_PER_BLOCK);
-	map->details_ind = dev_bnr % RPDFS_DEV_DETAILS_PER_BLOCK;
+	map->details_lba = inst->details_lba + (off / RPDFS_DEV_DETAILS_PER_BLOCK);
+	map->details_ind = off % RPDFS_DEV_DETAILS_PER_BLOCK;
 
 	off = map->details_lba - inst->details_lba;
 	map->summary_lba = inst->summary_lba + (off / RPDFS_DEV_SUMMARIES_PER_BLOCK);
@@ -138,29 +151,39 @@ static int map_dev_bnr(struct bstore_instance *inst, struct dev_bnr_mapping *map
 }
 
 /*
+ * Return the fs bnr for a block decribed by its lba's offset from the
+ * start of the storage lbas.
+ */
+static int map_bnr_from_storage_off(struct bstore_instance *inst, struct bnr_lba_mapping *map,
+				    u64 off)
+{
+	return map_bnr(inst, map, (off * inst->nr_devds) + inst->this_devd_pos);
+}
+
+/*
  * This is used to get at the summary lba and ind for the details block.
  * We perform a normal mapping with the first dev_bnr recorded in the
  * details block.
  */
-static void map_details_lba(struct bstore_instance *inst, struct dev_bnr_mapping *map,
+static void map_details_lba(struct bstore_instance *inst, struct bnr_lba_mapping *map,
 			    u64 details_lba)
 {
-	u64 dev_bnr = (details_lba - inst->details_lba) * RPDFS_DEV_DETAILS_PER_BLOCK;
 	int ret;
 
-	ret = map_dev_bnr(inst, map, dev_bnr);
+	ret = map_bnr_from_storage_off(inst, map, (details_lba - inst->details_lba) *
+				       RPDFS_DEV_DETAILS_PER_BLOCK);
 	BUG_ON(ret < 0); /* dirty commit should have valid lbas */
 }
 
-static void map_summary_lba(struct bstore_instance *inst, struct dev_bnr_mapping *map,
+static void map_summary_lba(struct bstore_instance *inst, struct bnr_lba_mapping *map,
 			    u64 summary_lba)
 {
-	u64 dev_bnr = (summary_lba - inst->summary_lba) * RPDFS_DEV_SUMMARIES_PER_BLOCK *
-			RPDFS_DEV_DETAILS_PER_BLOCK;
 	int ret;
 
-	ret = map_dev_bnr(inst, map, dev_bnr);
-	BUG_ON(ret < 0);
+	ret = map_bnr_from_storage_off(inst, map, (summary_lba - inst->summary_lba) *
+				       RPDFS_DEV_SUMMARIES_PER_BLOCK *
+				       RPDFS_DEV_DETAILS_PER_BLOCK);
+	BUG_ON(ret < 0); /* dirty commit should have valid lbas */
 }
 
 static u64 stable_commit_ctr(struct bstore_instance *inst)
@@ -608,19 +631,13 @@ static void set_details_free(struct bstore_instance *inst, u64 det_lba)
 {
 	struct rpdfs_dev_summary_block *sblk;
 	struct cached_block *sum_cblk;
-	struct dev_bnr_mapping map;
-	u64 bnr;
+	struct bnr_lba_mapping map;
 
 	map_details_lba(inst, &map, det_lba);
 
 	already_dirty_block(inst, map.summary_lba, &sum_cblk);
 	sblk = block_data_buf(sum_cblk);
-
-	/* XXX dev_bnr == fs bnr today.. this needs some cleanup */
-	bnr = map.lba - inst->storage_lba;
-
-	set_free_count(bnr, sblk, map.summary_ind);
-
+	set_free_count(map.bnr, sblk, map.summary_ind);
 	block_put(sum_cblk);
 }
 
@@ -677,7 +694,7 @@ static void update_dirty_summary(struct bstore_instance *inst, u64 det_lba)
 	struct rpdfs_dev_summary_block *sblk;
 	struct cached_block *det_cblk;
 	struct cached_block *sum_cblk;
-	struct dev_bnr_mapping map;
+	struct bnr_lba_mapping map;
 
 	map_details_lba(inst, &map, det_lba);
 
@@ -921,7 +938,7 @@ static void journal_replay_utask(void *data)
 
 /*
  * Give the caller a reference to the current version of the block that
- * stores the given dev_bnr.
+ * stores the given bnr.
  *
  * The network protocol doesn't yet make use of the block details.  We
  * do read the details block to reflect the IO cost of eventually doing
@@ -932,16 +949,16 @@ static void journal_replay_utask(void *data)
  * block into a send buffer before blocking so the block won't be
  * modified.
  */
-int bstore_read(u64 dev_bnr, struct cached_block **cblk, struct rpdfs_block_details *det)
+int bstore_read(u64 bnr, struct cached_block **cblk, struct rpdfs_block_details *det)
 {
 	struct bstore_instance *inst = &global_bstore_inst;
 	struct cached_block *det_cblk = NULL;
 	struct rpdfs_dev_details_block *dblk;
-	struct dev_bnr_mapping map;
+	struct bnr_lba_mapping map;
 	u64 ctr;
 	int ret;
 
-	ret = map_dev_bnr(inst, &map, dev_bnr);
+	ret = map_bnr(inst, &map, bnr);
 	if (ret < 0)
 		goto out;
 
@@ -967,11 +984,11 @@ int bstore_read(u64 dev_bnr, struct cached_block **cblk, struct rpdfs_block_deta
 out:
 	block_putp(&det_cblk);
 
-	dtracef("bstore_read", "dev_bnr %llu ret %d", dev_bnr, ret);
+	dtracef("bstore_read", "bnr %llu ret %d", bnr, ret);
 	return ret;
 }
 
-int bstore_write(u64 dev_bnr, struct page *data_page, struct rpdfs_block_details *in_det)
+int bstore_write(u64 bnr, struct page *data_page, struct rpdfs_block_details *in_det)
 {
 	struct bstore_instance *inst = &global_bstore_inst;
 	struct rpdfs_dev_details_block *dblk;
@@ -981,12 +998,12 @@ int bstore_write(u64 dev_bnr, struct page *data_page, struct rpdfs_block_details
 	struct cached_block *det_cblk = NULL;
 	struct cached_block *sum_cblk = NULL;
 	struct cached_block *cblk = NULL;
-	struct dev_bnr_mapping map;
+	struct bnr_lba_mapping map;
 	LIST_HEAD(pool);
 	u64 nr;
 	int ret;
 
-	ret = map_dev_bnr(inst, &map, dev_bnr);
+	ret = map_bnr(inst, &map, bnr);
 	if (ret < 0)
 		goto out;
 
@@ -1035,7 +1052,7 @@ out:
 	block_putp(&det_cblk);
 	block_putp(&sum_cblk);
 
-	dtracef("bstore_write", "dev_bnr %llu ret %d", dev_bnr, ret);
+	dtracef("bstore_write", "bnr %llu ret %d", bnr, ret);
 	return ret;
 }
 
@@ -1051,13 +1068,13 @@ int bstore_get_free_details(u64 bnr, unsigned long *bmap,
 	struct rpdfs_dev_details_block *dblk;
 	struct rpdfs_block_details *det;
 	struct cached_block *cblk = NULL;
-	struct dev_bnr_mapping map;
+	struct bnr_lba_mapping map;
 	int count = 0;
 	u64 ctr;
 	int ret;
 	int i;
 
-	ret = map_dev_bnr(inst, &map, bnr);
+	ret = map_bnr(inst, &map, bnr);
 	if (ret < 0)
 		goto out;
 
@@ -1094,6 +1111,17 @@ int bstore_get_free_details(u64 bnr, unsigned long *bmap,
 out:
 	block_putp(&cblk);
 	return ret ?: count;
+}
+
+/*
+ * Return the distance between contiguous devd storage blocks in the fs
+ * bnr space.
+ */
+u64 bstore_contig_devd_block_bnr_distance(void)
+{
+	struct bstore_instance *inst = &global_bstore_inst;
+
+	return inst->nr_devds;
 }
 
 /*
@@ -1362,23 +1390,22 @@ out:
 static int load_summary_block(struct bstore_instance *inst, u64 lba)
 {
 	struct rpdfs_dev_summary_block *sblk;
-	struct dev_bnr_mapping map;
+	struct bnr_lba_mapping map;
 	struct cached_block *cblk;
-	u64 bnr;
 	int i;
 	int ret;
 
 	map_summary_lba(inst, &map, lba);
-	bnr = map.lba - inst->storage_lba;
 
 	ret = read_block_hdr(inst, stable_lba(inst, lba), RPDFS_DEV_BLOCK_TYPE_SUMMARY, &cblk);
 	if (ret < 0)
 		goto out;
 
 	sblk = block_data_buf(cblk);
-	for (i = 0; i < RPDFS_DEV_SUMMARIES_PER_BLOCK; i++, bnr += RPDFS_DEV_DETAILS_PER_BLOCK) {
+	for (i = 0; i < RPDFS_DEV_SUMMARIES_PER_BLOCK; i++) {
 		if (sblk->summaries[i].alloc_count != RPDFS_DEV_DETAILS_PER_BLOCK)
-			set_free_count(bnr, sblk, i);
+			set_free_count(map.bnr + (i * RPDFS_DEV_DETAILS_PER_BLOCK * inst->nr_devds),
+				       sblk, i);
 	}
 	block_put(cblk);
 
@@ -1407,11 +1434,14 @@ static int load_summary_blocks(struct bstore_instance *inst)
  * The static configuration of the free map stripes will go away when we
  * have dynamic quorum updates.
  */
-int bstore_init(u64 stripe_size, u64 nr_stripes, u64 my_stripe)
+int bstore_init(u64 nr_devds, u64 this_devd_pos)
 {
 	struct bstore_instance *inst = &global_bstore_inst;
 	u64 commit_ctr;
 	int ret;
+
+	inst->nr_devds = nr_devds;
+	inst->this_devd_pos = this_devd_pos;
 
 	utask_init_wait_queue(&inst->commit_wq);
 	utask_init_wait_queue(&inst->replay_wq);
@@ -1422,8 +1452,12 @@ int bstore_init(u64 stripe_size, u64 nr_stripes, u64 my_stripe)
 		goto out;
 	}
 
+	/* the bnrs tracked by free-map need to be the first in detail blocks */
+	BUILD_BUG_ON(RPDFS_DEV_DETAILS_PER_BLOCK != RPDFS_MSG_BLOCKS_PER_FREE_STRIPE);
+
 	ret = init_journal(inst) ?:
-	      free_map_init(inst->storage_blocks, stripe_size, nr_stripes, my_stripe) ?:
+	      free_map_init(inst->storage_blocks, RPDFS_DEV_DETAILS_PER_BLOCK, nr_devds,
+			    this_devd_pos) ?:
 	      find_stable_commit(inst, &commit_ctr) ?:
 	      load_commit_blocks(inst, commit_ctr) ?:
 	      load_summary_blocks(inst) ?:

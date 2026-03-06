@@ -580,6 +580,7 @@ int cache_mode_grant_bulk_uncached(struct sockaddr_in *addr, int mode, u64 bmap_
 	size_t undo_size = 0;
 	unsigned long b;
 	int count = 0;
+	u64 dist;
 	int ret;
 
 	/* so we don't accidentally grant null/none, wouldn't make sense */
@@ -590,9 +591,12 @@ int cache_mode_grant_bulk_uncached(struct sockaddr_in *addr, int mode, u64 bmap_
 	search_client_blocks(inst, &zero_addr, bmap_bnr, false, &clb);
 	prev = prev_clb(clb);
 
+	dist = bstore_contig_devd_block_bnr_distance();
+
 	while (b < size) {
 		/* grant mode for uncached set bits */
-		while (b < size && (!clb || (bmap_bnr + b < clb->bnr))) {
+		while (b < size &&
+		       (!clb || (bmap_bnr + (b * dist) < clb->bnr))) {
 			ins = alloc_client_block(addr, bmap_bnr + b);
 			if (IS_ERR(ins)) {
 				ret = PTR_ERR(ins);
@@ -610,7 +614,8 @@ int cache_mode_grant_bulk_uncached(struct sockaddr_in *addr, int mode, u64 bmap_
 		}
 
 		/* clear cached bits */
-		if (b < size && (clb && (bmap_bnr + b == clb->bnr))) {
+		if (b < size &&
+		    (clb && (bmap_bnr + (b * dist) == clb->bnr))) {
 			clear_bit(b, bmap);
 			b = find_next_bit(bmap, size, b + 1);
 		}
@@ -642,9 +647,12 @@ void cache_mode_undo_bulk_grant(struct sockaddr_in *addr, u64 bnr,
 	struct cache_mode_instance *inst = &global_cache_mode_inst;
 	struct client_block *clb;
 	unsigned long b;
+	u64 dist;
+
+	dist = bstore_contig_devd_block_bnr_distance();
 
 	for (b = 0; (b = find_next_bit(bmap, size, b)) < size; b++) {
-		clb = search_client_blocks(inst, addr, bnr + b, false, NULL);
+		clb = search_client_blocks(inst, addr, bnr + (b * dist), false, NULL);
 		BUG_ON(IS_ERR_OR_NULL(clb));
 
 		clb->grant = RPDFS_CACHE_MODE_NULL;

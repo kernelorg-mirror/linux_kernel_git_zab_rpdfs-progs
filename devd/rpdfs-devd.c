@@ -132,7 +132,7 @@ static void main_utask(void *data)
 		goto out;
 
 	ret = block_init(dm->opts.dev_path, BLOCK_QUEUE_DEPTH) ?:
-	      bstore_init(RPDFS_DEV_DETAILS_PER_BLOCK, dm->opts.nr_devds, dm->opts.this_devd_pos) ?:
+	      bstore_init(dm->opts.nr_devds, dm->opts.this_devd_pos) ?:
 	      net_init() ?:
 	      cache_mode_init() ?:
 	      net_register_recv(proc_recv) ?:

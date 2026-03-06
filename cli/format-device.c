@@ -88,9 +88,17 @@ static int format_device_func(int argc, char **argv)
 	do {
 		d = details;
 		s = summary;
+		/*
+		 * We clamp the available fs storage blocks to be a
+		 * whole multiple of the number of blocks described by
+		 * full summary and details blocks.  We don't need users
+		 * of the summary and details blocks to test block
+		 * bounds or for entries that are recorded as unused.
+		 */
+		store = rounddown(total - commit - journal - summary - details,
+				  RPDFS_DEV_SUMMARIES_PER_BLOCK * RPDFS_DEV_DETAILS_PER_BLOCK);
 		details = DIV_ROUND_UP(store, RPDFS_DEV_DETAILS_PER_BLOCK);
 		summary = DIV_ROUND_UP(details, RPDFS_DEV_SUMMARIES_PER_BLOCK);
-		store = total - commit - journal - summary - details;
 	} while (d != details || s != summary);
 
 	ret = devfd_write_zeros(fd, 0, (total - store) * RPDFS_BLOCK_SIZE);

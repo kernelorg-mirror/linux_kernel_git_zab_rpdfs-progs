@@ -398,6 +398,7 @@ static void process_requests(struct cache_mode_instance *inst, u64 bnr)
 	struct client_block *clb;
 	bool saw_incompat;
 	int read_ret = 0;
+	u8 grant_mode;
 	u8 compat;
 	int ret;
 
@@ -434,13 +435,19 @@ restart:
 			goto restart;
 		}
 
-		if (req->is_read)
-			ret = send_read_result(req, req->request, cblk, &det, read_ret);
+		/* requests can cross with free_stripe_grants, don't grant less */
+		if (req->request > req->grant)
+			grant_mode = req->request;
 		else
-			ret = send_cache_mode(req, RPDFS_MSG_BLOCK_GRANT_MODE, req->request);
+			grant_mode = req->grant;
+
+		if (req->is_read)
+			ret = send_read_result(req, grant_mode, cblk, &det, read_ret);
+		else
+			ret = send_cache_mode(req, RPDFS_MSG_BLOCK_GRANT_MODE, grant_mode);
 		BUG_ON(ret < 0); /* evict?  shutdown? */
 
-		req->grant = req->request;
+		req->grant = grant_mode;
 		req->request = RPDFS_CACHE_MODE_NULL;
 		req->is_read = 0;
 		req->processing = 0;

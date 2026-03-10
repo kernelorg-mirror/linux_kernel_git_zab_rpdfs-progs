@@ -27,6 +27,36 @@
 
 #include "cli/cli.h"
 
+static double units_value(double x)
+{
+	while (x >= 1000)
+		x /= 1000;
+	return x;
+}
+
+static char *units_str(double x)
+{
+	static char *unit_strings[] = {
+		"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB", "RiB", "QiB",
+		NULL,
+	};
+	char **u = &unit_strings[0];
+
+	while (x >= 1000 && *u) {
+		x/= 1000;
+		u++;
+	}
+
+	return *u ?: "¯\\_(ツ)_/¯";
+}
+
+#define BS_F		"%12zu %3.0f%s blocks, %6.2f %s"
+#define BS_A(b, bs)	(size_t)(b), units_value(bs), units_str(bs), units_value((b) * (bs)), \
+			units_str((b) * (bs))
+
+#define PCT_F		"%6.2f%%"
+#define PCT_A(a, b)	((double)(a) * 100 / (b))
+
 static int format_device_func(int argc, char **argv)
 {
 	struct rpdfs_dev_commit_block *cmt = NULL;
@@ -38,6 +68,7 @@ static int format_device_func(int argc, char **argv)
 	u64 journal;
 	u64 summary;
 	u64 details;
+	u64 internal;
 	u64 store;
 	u64 crc;
 	u64 d;
@@ -141,11 +172,19 @@ static int format_device_func(int argc, char **argv)
 		goto out;
 	}
 
+	internal = commit + journal + summary + details;
 	printf("Formatted rpdfs device:\n"
-	       "  uuid:                   %s\n"
-	       "  4KiB blocks:            %llu\n",
+	       "  uuid:                 %s\n"
+	       "  device size:          "BS_F"\n"
+	       "  internal metadata:    "BS_F" ("PCT_F")\n"
+	       "  usable fs blocks:     "BS_F" ("PCT_F")\n"
+	       "  unused end of device: "BS_F" ("PCT_F")\n",
 		uuid_str,
-		total);
+		BS_A(total, RPDFS_BLOCK_SIZE),
+		BS_A(internal, RPDFS_BLOCK_SIZE), PCT_A(internal, total),
+	        BS_A(store, RPDFS_BLOCK_SIZE), PCT_A(store, total),
+		BS_A(total - (internal + store), RPDFS_BLOCK_SIZE),
+			PCT_A(total - (internal + store), total));
 
 	ret = 0;
 out:

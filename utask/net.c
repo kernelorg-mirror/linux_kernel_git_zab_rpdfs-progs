@@ -596,6 +596,7 @@ int net_connect(struct sockaddr_in *addr)
 {
 	struct net_instance *inst = &global_net_inst;
 	struct net_socket *sock;
+	struct net_socket *found;
 	int fd = -1;
 	int ret;
 
@@ -618,6 +619,9 @@ int net_connect(struct sockaddr_in *addr)
 	sock->addr = *addr;
 	sock->fd = fd;
 	fd = -1;
+
+	found = get_peer_sock(inst, addr, sock);
+	BUG_ON(found != sock); /* XXX don't yet support racing reconnect */
 
 	ret = utask_create(send_utask, sock, &sock->send_tsk) ?:
 	      utask_create(recv_utask, sock, &sock->recv_tsk);

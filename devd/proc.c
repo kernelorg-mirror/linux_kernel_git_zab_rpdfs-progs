@@ -113,8 +113,10 @@ static void block_write_utask(void *data)
 	const u64 bnr = le64_to_cpu(bw->bnr);
 	int ret;
 
-	in_det.alloc_ctr = bw->alloc_ctr;
-	in_det.write_ctr = bw->wcount;
+	in_det.alloc_ctr = bw->det.alloc_ctr;
+	in_det.write_ctr = bw->det.wcount;
+	in_det.place_lo = bw->det.place_lo;
+	in_det.place_hi = bw->det.place_hi;
 
 	ret = bstore_write(bnr, preq->data_page, &in_det);
 

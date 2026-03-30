@@ -102,7 +102,8 @@ struct rpdfs_dev_commit_block {
 struct rpdfs_block_details {
 	__le64 alloc_ctr;
 	__le64 write_ctr;
-	__le64 __owner; /* NYI, but reserving space to fit details_per_block in s8 */
+	__le64 place_lo;
+	__le64 place_hi;
 	__le32 crc;
 	__u8 _pad[3];
 	__u8 type;

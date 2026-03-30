@@ -335,12 +335,10 @@ static int send_read_result(struct client_block *clb, u8 mode, struct cached_blo
 	struct sockaddr_in addr;
 	struct page *data_page;
 
+	memset_zero_sizeof(rr);
 	rr.bnr = cpu_to_le64(clb->bnr);
-	rr.alloc_ctr = 0;
-	rr.wcount = 0;
 	rr.grant_mode = mode;
 	rr.err = rpdfs_msg_err(read_ret);
-	memset_zero_sizeof(rr._pad);
 
 	hdr.ctl_size = sizeof(rr);
 	hdr.data_size = 0;
@@ -348,8 +346,10 @@ static int send_read_result(struct client_block *clb, u8 mode, struct cached_blo
 	data_page = NULL;
 
 	if (read_ret == 0) {
-		rr.alloc_ctr = det->alloc_ctr;
-		rr.wcount = det->write_ctr;
+		rr.det.alloc_ctr = det->alloc_ctr;
+		rr.det.wcount = det->write_ctr;
+		rr.det.place_lo = det->place_lo;
+		rr.det.place_hi = det->place_hi;
 		if (clb->read_data) {
 			hdr.data_size = cpu_to_le16(RPDFS_BLOCK_SIZE);
 			data_page = block_data_page(cblk);

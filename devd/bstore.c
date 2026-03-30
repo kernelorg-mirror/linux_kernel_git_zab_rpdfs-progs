@@ -1034,6 +1034,8 @@ int bstore_write(u64 bnr, struct page *data_page, struct rpdfs_block_details *in
 	det = &dblk->details[map.details_ind];
 	det->alloc_ctr = in_det->alloc_ctr;
 	det->write_ctr = in_det->write_ctr;
+	det->place_lo = in_det->place_lo;
+	det->place_hi = in_det->place_hi;
 	block_putp(&cblk);
 
 	/* make sure we have a dirty summary block for write-time updates */

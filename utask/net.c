@@ -449,6 +449,19 @@ out:
 	return ret;
 }
 
+static int set_connected_options(int fd)
+{
+	int optval;
+	int ret;
+
+	optval = 1;
+	ret = setsockopt(fd, SOL_TCP, TCP_NODELAY, &optval, sizeof(optval));
+	if (ret < 0)
+		ret = -errno;
+
+	return ret;
+}
+
 static int accept_waiter(int fd, struct sockaddr *addr, socklen_t *addrlen, int flags)
 {
 	struct utask_cqe_waiter waiter;
@@ -485,6 +498,12 @@ static void accept_utask(void *data)
 		if (ret < 0)
 			goto out;
 		fd = ret;
+
+		ret = set_connected_options(fd);
+		if (ret < 0) {
+			close(fd);
+			goto out;
+		}
 
 		accepted = alloc_sock(inst);
 		if (!accepted) {
@@ -607,6 +626,10 @@ int net_connect(struct sockaddr_in *addr)
 	}
 
 	ret = connect_waiter(fd, (struct sockaddr *)addr, sizeof(struct sockaddr_in));
+	if (ret < 0)
+		goto out;
+
+	ret = set_connected_options(fd);
 	if (ret < 0)
 		goto out;
 

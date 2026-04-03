@@ -65,16 +65,10 @@
  * once they wake up.
  */
 
-/*
- * A given commit will only be half full of foreground dirtied blocks.
- * The second half is used by journal replay to move blocks from the
- * oldest live commit out of the journal.
- */
-#define MAX_PREPARED_ENTRIES (RPDFS_DEV_COMMIT_MAX_ENTRIES / 2)
-
 static struct bstore_instance {
 	struct hash_table *stable_ht;
 	struct hash_table *dirty_ht;
+	struct hash_table *replay_ht;
 	struct rpdfs_uuid dev_uuid;
 	bool have_uuid;
 	struct rpdfs_dev_commit_block stable_cmt;
@@ -95,9 +89,9 @@ static struct bstore_instance {
 	struct utask_wait_queue commit_wq;
 	struct rpdfs_dev_commit_block *dirty_cmt;
 	struct cached_block *dirty_cmt_cblk;
+	struct list_head cmt_dirty_list;
 	u64 commit_phase;
 	int last_commit_ret;
-	u64 non_replay_entries;
 
 	struct utask *replay_tsk;
 	struct utask_wait_queue replay_wq;
@@ -105,9 +99,10 @@ static struct bstore_instance {
 	struct {
 		struct cached_block *cblk;
 		unsigned int e;
-	} replay_blocks[MAX_PREPARED_ENTRIES];
+	} replay_blocks[RPDFS_DEV_COMMIT_MAX_ENTRIES];
 
 } global_bstore_inst = {
+	.cmt_dirty_list = LIST_HEAD_INIT(global_bstore_inst.cmt_dirty_list),
 };
 
 /*
@@ -210,6 +205,15 @@ static u64 stable_lba(struct bstore_instance *inst, u64 lba)
 static u64 dirty_lba(struct bstore_instance *inst, u64 lba)
 {
 	return htable_lookup(inst->dirty_ht, lba);
+}
+
+/*
+ * Returns non-zero if the lba is currently being replayed.  It has a
+ * write in flight so dirty blocks should use journal blocks instead.
+ */
+static u64 replay_lba(struct bstore_instance *inst, u64 lba)
+{
+	return htable_lookup(inst->replay_ht, lba);
 }
 
 static bool lba_in_journal(struct bstore_instance *inst, u64 lba)
@@ -322,6 +326,11 @@ static u64 current_commit_phase(struct bstore_instance *inst)
 	return inst->commit_phase;
 }
 
+static bool current_commit_writing(struct bstore_instance *inst)
+{
+	return (inst->commit_phase & 1) == 1;
+}
+
 /*
  * Wait until the commit that the caller sampled is done.  The phase is
  * odd while a commit is being written.  Setting the low (odd) bit in
@@ -348,6 +357,10 @@ static u64 journal_index_ctr_lba(struct bstore_instance *inst, u64 ctr)
 	return inst->journal_lba + (ctr % journal_blocks(inst));
 }
 
+#define REPLAY_START_PCT 80
+#define REPLAY_STOP_PCT 50
+#define REPLAY_WAIT_PCT 95
+
 static int journal_used_pct(struct bstore_instance *inst)
 {
 	struct rpdfs_dev_commit_block *cmt = &inst->stable_cmt;
@@ -357,6 +370,11 @@ static int journal_used_pct(struct bstore_instance *inst)
 		journal_blocks(inst);
 
 	return max(c, j);
+}
+
+static bool cmt_entries_fit(struct rpdfs_dev_commit_block *cmt, u16 additional)
+{
+	return !cmt || (le16_to_cpu(cmt->nr_entries) + additional) <= RPDFS_DEV_COMMIT_MAX_ENTRIES;
 }
 
 /*
@@ -378,7 +396,7 @@ static int journal_used_pct(struct bstore_instance *inst)
  * in the interim, then we return -EAGAIN and the caller should retry.
  */
 static int prepare_dirty_commit(struct bstore_instance *inst, u64 stable_ctr,
-			        struct list_head *pool, u16 block_count, bool is_replay,
+			        struct list_head *pool, u16 block_count,
 				struct rpdfs_dev_commit_block **cmt_ret)
 {
 	struct rpdfs_dev_commit_block *stable = &inst->stable_cmt;
@@ -387,30 +405,23 @@ static int prepare_dirty_commit(struct bstore_instance *inst, u64 stable_ctr,
 	u64 lba;
 	int ret;
 
-	if (WARN_ON_ONCE(block_count > MAX_PREPARED_ENTRIES)) {
+	if (WARN_ON_ONCE(block_count > RPDFS_DEV_COMMIT_MAX_ENTRIES)) {
 		ret = -EINVAL;
 		goto out;
 	}
 
-	/* can't modify commit being written, everyone waits for io to complete */
-	ret = utask_wait_event(&inst->commit_wq, (current_commit_phase(inst) & 1) == 0);
+	/* kick off replay if the journal is getting full, waiting if it's too full */
+	if (journal_used_pct(inst) > REPLAY_START_PCT)
+		utask_wake_task(inst->replay_tsk);
+	ret = utask_wait_event(&inst->commit_wq, journal_used_pct(inst) < REPLAY_WAIT_PCT);
 	if (ret < 0)
 		goto out;
 
-	if (!is_replay) {
-		/* kick off replay if the journal is getting full, waiting if it's too full */
-		if (journal_used_pct(inst) > 80)
-			utask_wake_task(inst->replay_tsk);
-		ret = utask_wait_event(&inst->commit_wq, journal_used_pct(inst) < 95);
-		if (ret < 0)
-			goto out;
-
-		/* all non-replay share prepare max */
-		ret = utask_wait_event(&inst->commit_wq, (inst->non_replay_entries + block_count)
-								<= MAX_PREPARED_ENTRIES);
-		if (ret < 0)
-			goto out;
-	}
+	/* wait for writing commit to finish and for room for our blocks */
+	ret = utask_wait_event(&inst->commit_wq, !current_commit_writing(inst) &&
+			                         cmt_entries_fit(inst->dirty_cmt, block_count));
+	if (ret < 0)
+		goto out;
 
 	/* verify inputs after possibly sleeping */
 	if (stable_ctr != stable_commit_ctr(inst)) {
@@ -422,16 +433,13 @@ static int prepare_dirty_commit(struct bstore_instance *inst, u64 stable_ctr,
 	if (ret < 0)
 		goto out;
 
-	/* past point of no return */
-	if (!is_replay)
-		inst->non_replay_entries += block_count;
-
 	cmt = inst->dirty_cmt;
 	if (!cmt) {
 		commit_ctr = le64_to_cpu(stable->commit_ctr) + 1;
 		lba = commit_ctr_lba(inst, commit_ctr);
 
-		ret = block_create_dirty(lba, pool, NULL, &inst->dirty_cmt_cblk);
+		ret = block_create_dirty(lba, pool, &inst->cmt_dirty_list, NULL,
+					 &inst->dirty_cmt_cblk);
 		BUG_ON(ret < 0); /* pool should have prevented failure */
 
 		cmt = block_data_buf(inst->dirty_cmt_cblk);
@@ -465,15 +473,14 @@ out:
  * called when they're done.
  */
 static bool retry_prepare_dirty(struct bstore_instance *inst, u64 stable_ctr, int *ret,
-				struct list_head *pool, u16 block_count, bool is_replay,
+				struct list_head *pool, u16 block_count,
 				struct rpdfs_dev_commit_block **cmt_ret)
 {
 	if (stable_ctr != stable_commit_ctr(inst))
 		return true;
 
 	if (*ret == 0) {
-		*ret = prepare_dirty_commit(inst, stable_ctr, pool, block_count, is_replay,
-					    cmt_ret);
+		*ret = prepare_dirty_commit(inst, stable_ctr, pool, block_count, cmt_ret);
 		if (*ret == -EAGAIN) {
 			*ret = 0;
 			return true;
@@ -549,7 +556,7 @@ static void dirty_block(struct bstore_instance *inst, struct rpdfs_dev_commit_bl
 		return;
 	}
 
-	if (lba_in_journal(inst, stable_lba(inst, lba)) || lba_unused) {
+	if ((lba_in_journal(inst, stable_lba(inst, lba)) || lba_unused) && !replay_lba(inst, lba)) {
 		dlba = lba;
 	} else {
 		dlba = journal_index_ctr_lba(inst, le64_to_cpu(cmt->journal_head_ctr));
@@ -569,7 +576,7 @@ static void dirty_block(struct bstore_instance *inst, struct rpdfs_dev_commit_bl
 	memset_zero_sizeof(ent->pad_);
 	ent->type = type;
 
-	ret = block_create_dirty(dlba, pool, data_page, cblk);
+	ret = block_create_dirty(dlba, pool, &inst->cmt_dirty_list, data_page, cblk);
 	BUG_ON(ret < 0); /* prepare should have preallocated */
 
 	htable_insert(inst->dirty_ht, lba, dlba);
@@ -623,9 +630,6 @@ static void set_free_count(u64 bnr, struct rpdfs_dev_summary_block *sblk, unsign
  * Called for each details block that was written in the commit.  We
  * look up its summary entry in its summary block that must also have
  * been written.  We set that free count in the free-map.
- *
- * This is called post write in the commit before the written dirty
- * blocks have been cleaned.
  */
 static void set_details_free(struct bstore_instance *inst, u64 det_lba)
 {
@@ -667,8 +671,8 @@ static void update_commit_lbas(struct bstore_instance *inst, struct rpdfs_dev_co
 }
 
 /*
- * This is called before the stable_ht is updated so the committed
- * blocks can be acquired with already_dirty_block.
+ * This is called before the stable/dirty hash tables are updated so the
+ * committed blocks can be acquired with already_dirty_block.
  */
 static void update_committed_blocks(struct bstore_instance *inst,
 				    struct rpdfs_dev_commit_block *cmt)
@@ -734,7 +738,11 @@ static void write_dirty_commit(struct bstore_instance *inst, struct rpdfs_dev_co
 	int ret;
 	int i;
 
-	dtracef("bstore_commit_prepare",
+	/* get most recent result from replay */
+	cmt->oldest_commit_ctr = inst->stable_cmt.oldest_commit_ctr;
+	cmt->journal_tail_ctr = inst->stable_cmt.journal_tail_ctr;
+
+	dtracef("bstore_commit_write",
 		"phase %llu ctr %llu old_ctr %llu head_ctr %llu tail_ctr %llu ents %u in_journ %u",
 		inst->commit_phase, le64_to_cpu(cmt->commit_ctr),
 		le64_to_cpu(cmt->oldest_commit_ctr), le64_to_cpu(cmt->journal_head_ctr),
@@ -773,7 +781,7 @@ static void write_dirty_commit(struct bstore_instance *inst, struct rpdfs_dev_co
 
 	inst->commit_phase++;
 
-	ret = block_write_all_dirty();
+	ret = block_write_dirty(&inst->cmt_dirty_list);
 	if (ret == 0) {
 		update_committed_blocks(inst, cmt);
 		update_commit_lbas(inst, cmt);
@@ -781,11 +789,9 @@ static void write_dirty_commit(struct bstore_instance *inst, struct rpdfs_dev_co
 	}
 
 	htable_clear(inst->dirty_ht);
-	block_clean_all_dirty();
 	inst->dirty_cmt = NULL;
 	block_putp(&inst->dirty_cmt_cblk);
 
-	inst->non_replay_entries = 0;
 	inst->last_commit_ret = ret;
 	inst->commit_phase++;
 	utask_wake_all(&inst->commit_wq);
@@ -808,115 +814,158 @@ static void commit_write_utask(void *data)
 	} while (!utask_am_canceled());
 }
 
+#define for_each_commit_block(CMT, I, LBA, JOURN_LBA) \
+	for (I = 0; \
+	     (I < le16_to_cpu((CMT)->nr_entries)) && ({ \
+		LBA = le64_to_cpu((CMT)->entries[I].lba); \
+		JOURN_LBA = le64_to_cpu((CMT)->entries[I].journ_lba); \
+		true; }); \
+	     I++)
+
+#define for_each_replay_block(INST, CMT, REPLAY_NR, I, LBA, JOURN_LBA) \
+	for (I = 0; \
+	     (I < REPLAY_NR) && ({ \
+		LBA = le64_to_cpu((CMT)->entries[(INST)->replay_blocks[I].e].lba); \
+		JOURN_LBA = le64_to_cpu((CMT)->entries[(INST)->replay_blocks[I].e].journ_lba); \
+		true; }); \
+	     I++)
 
 /*
- * We attempt to replay blocks in the oldest commit whenever the journal
- * gets too full.
+ * The oldest commit and journal blocks are reclaimed by replaying the
+ * blocks that are still in use out of the journal to their final lba.
+ * We only have to do this for current blocks that are still in the
+ * journal as recorded by the oldest commit.
  *
- * The only blocks it has to replay are those for whom the most recent
- * version of the block is found in the oldest commit, but first it has
- * to read them to be able to write them somewhere else.  While the
- * oldest commit can not change, the blocks we're trying to read can be
- * updated by more recent commits.
+ * If an otherwise current block is dirty then we wait for that commit
+ * to finish.  We don't want to replay the block if the dirty version is
+ * written and we don't want to drop the current stable version if the
+ * dirty commit fails.
  *
- * Once we've possible slept reading all the blocks we thought we'd have
- * to replay, we double check the version and location of the blocks.
- * New versions might have been written, or the block might be dirty in
- * the current dirty commit.
+ * We record blocks that have replay writes in flight in a dedicated
+ * hash table.  Dirtying won't try and dirty a block that we have in
+ * flight.  It'll write the new version to the journal as it would have
+ * if the final lba was in use.
  *
- * Normal foreground writers limit themselves to the half of the entries
- * in a dirty commit.  This ensures that we'll always have the other
- * half of the entries for recording replayed blocks.  Since we only
- * have to replay blocks in the journal, we can always write them out to
- * their real location.
+ * We only work a commit at a time as a weak limit on the amount of
+ * device resources that replay can use.  It first has to read all the
+ * input blocks and then write them to their stable location.
  *
- * The replay task is not guaranteed to be the last task that dirties
- * blocks in the commit.  Later tasks can see the dirty replay blocks
- * and modify them.  If we could ensure that replay was the last user of
- * the commit, then we could ensure that replayed blocks are never
- * modified, and we could skip them when calculating crcs or updating
- * summaries.
+ * Today this replays by reading and writing through the devd block
+ * cache.  It could use device copy commands that avoid the host bw use
+ * when devices support them.  (nvme in particular has a copy command.).
  */
 static void replay_oldest_commit(struct bstore_instance *inst)
 {
-	struct rpdfs_dev_commit_block *dirty_cmt;
 	struct rpdfs_dev_commit_block *cmt;
-	struct rpdfs_dev_commit_entry *ent;
-	struct cached_block *dirty_cblk;
+	struct cached_block *cmt_cblk = NULL;
 	struct cached_block *cblk = NULL;
+	LIST_HEAD(dirty_list);
 	LIST_HEAD(pool);
-	u64 stable_ctr;
 	u64 journ_lba;
+	u64 phase;
 	u64 lba;
 	u16 replay_nr = 0;
-	u16 i;
+	int i;
 	int ret;
 
-	stable_ctr = le64_to_cpu(inst->stable_cmt.commit_ctr);
 	lba = commit_ctr_lba(inst, le64_to_cpu(inst->stable_cmt.oldest_commit_ctr));
-	ret = read_block_hdr(inst, lba, RPDFS_DEV_BLOCK_TYPE_COMMIT, &cblk);
+	ret = read_block_hdr(inst, lba, RPDFS_DEV_BLOCK_TYPE_COMMIT, &cmt_cblk);
 	if (ret < 0)
 		goto out;
+	cmt = block_data_buf(cmt_cblk);
 
-	cmt = block_data_buf(cblk);
-	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
-		ent = &cmt->entries[i];
-		lba = le64_to_cpu(ent->lba);
-		journ_lba = le64_to_cpu(ent->journ_lba);
+	/* record and issue read-ahead on first guess at blocks to replay */
+	for_each_commit_block(cmt, i, lba, journ_lba) {
+		/* don't check dirty when gathering before we block */
+		if (lba_in_journal(inst, journ_lba) && stable_lba(inst, lba) == journ_lba) {
+			inst->replay_blocks[replay_nr].e = i;
+			replay_nr++;
+			block_readahead(journ_lba);
+		}
+	}
 
-		/* will naturally skip replayed blocks in the commit */
-		if (!lba_in_journal(inst, journ_lba) || stable_lba(inst, lba) != journ_lba)
-			continue;
-
-		inst->replay_blocks[replay_nr].e = i;
-		ret = block_read(journ_lba, &inst->replay_blocks[replay_nr].cblk);
+	/* block waiting for reads */
+	for_each_replay_block(inst, cmt, replay_nr, i, lba, journ_lba) {
+		ret = block_read(journ_lba, &inst->replay_blocks[i].cblk);
 		if (ret < 0)
 			goto out;
-
-		replay_nr++;
 	}
 
-	ret = prepare_dirty_commit(inst, stable_ctr, &pool, replay_nr, true, &dirty_cmt);
+	/* verify blocks after waiting, can drop all blocks */
+	for_each_replay_block(inst, cmt, replay_nr, i, lba, journ_lba) {
+		/* drop block if journaled version is no longer current stable */
+		if (stable_lba(inst, lba) != journ_lba) {
+			block_invalidate(inst->replay_blocks[i].cblk);
+			block_putp(&inst->replay_blocks[i].cblk);
+			inst->replay_blocks[i].e = 0;
+			if (i != replay_nr - 1)
+				swap(inst->replay_blocks[i], inst->replay_blocks[replay_nr - 1]);
+			replay_nr--;
+			i--;
+			continue;
+		}
+
+		/* wait for commits that dirtied our replay blocks to finish */
+		if (dirty_lba(inst, lba)) {
+			phase = current_commit_phase(inst);
+			ret = wait_until_commit_done(inst, phase);
+			if (ret < 0)
+				goto out;
+			i = -1;
+			continue;
+		}
+	}
+
+	ret = block_alloc_pool(&pool, replay_nr);
 	if (ret < 0)
 		goto out;
 
-	for (i = 0; i < replay_nr; i++) {
-		ent = &cmt->entries[inst->replay_blocks[i].e];
-		lba = le64_to_cpu(ent->lba);
-		journ_lba = le64_to_cpu(ent->journ_lba);
+	/* create dirty copies of the input journaled blocks at their final lbas */
+	for_each_replay_block(inst, cmt, replay_nr, i, lba, journ_lba) {
+		/* prevent commits from dirtying our write in flight */
+		htable_insert(inst->replay_ht, lba, lba);
 
-		/* check that block is still current and not dirty in this commit */
-		if (stable_lba(inst, lba) != journ_lba || dirty_lba(inst, lba) != 0)
-			continue;
+		ret = block_create_dirty(lba, &pool, &dirty_list,
+					 block_data_page(inst->replay_blocks[i].cblk), &cblk);
+		BUG_ON(ret < 0); /* pool should have prevented failure */
 
-		dirty_block(inst, dirty_cmt, &pool, lba, ent->type, true, NULL,
-			    inst->replay_blocks[i].cblk, &dirty_cblk);
-		block_put(dirty_cblk);
+		/* done with all blocks once they're on the dirty list */
+		block_putp(&inst->replay_blocks[i].cblk);
+		block_putp(&cblk);
 	}
 
-	le64_add_cpu(&dirty_cmt->oldest_commit_ctr, 1);
-	le64_add_cpu(&dirty_cmt->journal_tail_ctr, le16_to_cpu(dirty_cmt->nr_in_journal));
+	ret = block_write_dirty(&dirty_list);
+	BUG_ON(ret < 0); /* XXX :) */
 
-	ret = finish_dirty_commit(inst, &pool);
+	for_each_replay_block(inst, cmt, replay_nr, i, lba, journ_lba) {
+		/* the lba is available for dirtying again */
+		htable_delete(inst->replay_ht, lba);
+
+		/* clear stable if it was still pointing at the block in the journal */
+		if (stable_lba(inst, lba) == journ_lba)
+			htable_delete(inst->stable_ht, lba);
+
+		/* lba used from now on, drop old journaled lba */
+		if (block_lookup(journ_lba, &cblk) == 0) {
+			block_invalidate(cblk);
+			block_putp(&cblk);
+		}
+	}
+
+	/* let runtime operate on result of writes, next commit will really store */
+	le64_add_cpu(&inst->stable_cmt.oldest_commit_ctr, 1);
+	le64_add_cpu(&inst->stable_cmt.journal_tail_ctr, le16_to_cpu(cmt->nr_in_journal));
+	utask_wake_all(&inst->commit_wq);
+
+	ret = 0;
 out:
-	/* might as well zero to tidy up */
+	block_free_pool(&pool);
+	block_put(cmt_cblk);
+	block_put(cblk);
 	for (i = 0; i < replay_nr; i++) {
 		block_putp(&inst->replay_blocks[i].cblk);
 		inst->replay_blocks[i].e = 0;
 	}
-
-	block_put(cblk);
-}
-
-/*
- * Only add dirty replay blocks when there older stable commits and we
- * haven't already replayed in the current dirty commit.
- */
-static bool should_replay(struct bstore_instance *inst)
-{
-	return inst->stable_cmt.oldest_commit_ctr != inst->stable_cmt.commit_ctr &&
-	       (!inst->dirty_cmt || inst->dirty_cmt->oldest_commit_ctr ==
-				    inst->stable_cmt.oldest_commit_ctr);
 }
 
 /*
@@ -929,7 +978,7 @@ static void journal_replay_utask(void *data)
 	int ret;
 
 	do {
-		ret = utask_wait_event_task(should_replay(inst));
+		ret = utask_wait_event_task(journal_used_pct(inst) > REPLAY_STOP_PCT);
 		if (ret == 0)
 			replay_oldest_commit(inst);
 
@@ -1019,7 +1068,7 @@ int bstore_write(u64 bnr, struct page *data_page, struct rpdfs_block_details *in
 		      read_block_hdr(inst, stable_lba(inst, map.summary_lba),
 				     RPDFS_DEV_BLOCK_TYPE_SUMMARY, &sum_cblk);
 
-	} while (retry_prepare_dirty(inst, nr, &ret, &pool, 3, false, &cmt));
+	} while (retry_prepare_dirty(inst, nr, &ret, &pool, 3, &cmt));
 	if (ret < 0)
 		goto out;
 
@@ -1449,7 +1498,9 @@ int bstore_init(u64 nr_devds, u64 this_devd_pos)
 	utask_init_wait_queue(&inst->replay_wq);
 
 	inst->dirty_ht = htable_alloc(RPDFS_DEV_COMMIT_MAX_ENTRIES);
-	if (!inst->dirty_ht) {
+	inst->replay_ht = htable_alloc(RPDFS_DEV_COMMIT_MAX_ENTRIES);
+	if (!inst->dirty_ht || !inst->replay_ht) {
+		free(inst->dirty_ht);
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -1479,5 +1530,6 @@ void bstore_exit(void)
 	utask_destroy(inst->commit_tsk);
 	free(inst->stable_ht);
 	free(inst->dirty_ht);
+	free(inst->replay_ht);
 	memset(inst, 0, sizeof(struct bstore_instance));
 }

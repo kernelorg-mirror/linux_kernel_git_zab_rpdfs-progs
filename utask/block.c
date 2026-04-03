@@ -31,11 +31,10 @@
  * read/write exclusion.  That's entirely the responsibility of the
  * caller.
  *
- * Callers can create dirty blocks, which we record on a list, and then
- * provide a call for writing all dirty blocks.  This mechanism is built
- * for the particular needs of the only devd user.  It's making block
- * changes persistent before sending responses to requests.  Dirty
- * blocks are short lived.
+ * Callers track and write out dirty blocks via their own list.  This is
+ * built for the particular needs of the only devd user.  It assembles a
+ * few relatively small groups of dirty blocks and promptly writes them
+ * and waits for their completion.
  */
 
 static struct block_cache_instance {
@@ -43,24 +42,19 @@ static struct block_cache_instance {
 	struct list_head submit_list;
 	struct counted_list_head hot_fifo;
 	struct counted_list_head cold_fifo;
-	struct list_head dirty_list;
 	struct utask *submit_tsk;
 	struct utask *exit_tsk;
 	struct utask_wait_queue write_wq;
 	u64 total_blocks;
 	unsigned long nr_hashed;
-	unsigned long nr_dirty;
-	unsigned long nr_dirty_submitted;
 	unsigned long nr_in_flight;
 	unsigned long queue_depth;
-	int write_err;
 	int dev_fd;
 
 } global_block_cache_inst = {
 	.submit_list = LIST_HEAD_INIT(global_block_cache_inst.submit_list),
 	.hot_fifo.head = LIST_HEAD_INIT(global_block_cache_inst.hot_fifo.head),
 	.cold_fifo.head = LIST_HEAD_INIT(global_block_cache_inst.cold_fifo.head),
-	.dirty_list = LIST_HEAD_INIT(global_block_cache_inst.dirty_list),
 	.write_wq = INIT_UTASK_WAIT_QUEUE(global_block_cache_inst.write_wq),
 	.dev_fd = -1,
 };
@@ -75,6 +69,7 @@ struct cached_block {
 	u64 bnr;
 	long refcount;
 	int error;
+	int *error_notify;
 	/* awkward union magic only for tracing flags */
 	union {
 		unsigned int all_flags_;
@@ -307,8 +302,11 @@ static void io_completion(struct io_uring_cqe *cqe, struct utask_cqe_callback *c
 	err = 0;
 
 	if (cblk->dirty) {
-		if (--inst->nr_dirty_submitted <= 0)
+		cblk->dirty = 0;
+		if (list_is_singular(&cblk->dirty_head))
 			utask_wake_all(&inst->write_wq);
+		list_del_init(&cblk->dirty_head);
+		put_cblk(cblk);
 	} else {
 		cblk->uptodate = 1;
 		utask_wake_all(&cblk->wq);
@@ -316,6 +314,8 @@ static void io_completion(struct io_uring_cqe *cqe, struct utask_cqe_callback *c
 
 	cblk->queued = 0;
 	cblk->error = err;
+	if (err != 0 && cblk->error_notify)
+		*cblk->error_notify = err;
 	put_cblk(cblk); /* submit list ref that covered io */
 	cblk = NULL;
 
@@ -501,8 +501,8 @@ void block_readahead(u64 bnr)
  * it under the caller.  We unhash it, leaving the caller's reference
  * intact, and try to allocate a new block to insert in its place.
  */
-int block_create_dirty(u64 bnr, struct list_head *pool, struct page *data_page,
-		       struct cached_block **cblk_ret)
+int block_create_dirty(u64 bnr, struct list_head *pool, struct list_head *dirty_list,
+		       struct page *data_page, struct cached_block **cblk_ret)
 {
 	struct block_cache_instance *inst = &global_block_cache_inst;
 	struct cached_block *cblk;
@@ -532,9 +532,8 @@ int block_create_dirty(u64 bnr, struct list_head *pool, struct page *data_page,
 		cblk->dirty = 1;
 		cblk->error = 0;
 
-		list_add_tail(&cblk->dirty_head, &inst->dirty_list);
+		list_add_tail(&cblk->dirty_head, dirty_list);
 		get_cblk(cblk);
-		inst->nr_dirty++;
 	}
 
 	ret = 0;
@@ -551,54 +550,38 @@ out:
 }
 
 /*
- * Try and write all dirty blocks.  Returns once all submitted write IOs
- * are complete.
+ * Try and write the dirty blocks in the caller's list.  Returns once
+ * all submitted write IOs are complete.
  *
  * The caller is responsible for ensuring that there is only ever one
  * caller at a time.
  */
-int block_write_all_dirty(void)
+int block_write_dirty(struct list_head *dirty_list)
 {
 	struct block_cache_instance *inst = &global_block_cache_inst;
 	struct cached_block *cblk;
+	int err = 0;
 	int ret;
 
-	inst->write_err = 0;
-	list_for_each_entry(cblk, &inst->dirty_list, dirty_head) {
+	list_for_each_entry(cblk, dirty_list, dirty_head) {
 		list_add_tail(&cblk->submit_head, &inst->submit_list);
+		cblk->error_notify = &err;
 		cblk->queued = 1;
 		get_cblk(cblk);
 	}
-	inst->nr_dirty_submitted += inst->nr_dirty;
 
 	if (should_submit(inst))
 		utask_wake_task(inst->submit_tsk);
 
-	ret = utask_wait_event(&inst->write_wq, inst->nr_dirty_submitted == 0);
+	ret = utask_wait_event(&inst->write_wq, list_empty(dirty_list));
 	if (ret == 0)
-		ret = inst->write_err;
+		ret = err;
+
+	/* don't notify as we return for any blocks still in flight */
+	list_for_each_entry(cblk, dirty_list, dirty_head)
+		cblk->error_notify = NULL;
 
 	return ret;
-}
-
-/*
- * This is a separate call, instead of being done before
- * _write_all_dirty_returns, so that the caller can rely on getting
- * references to the pinned dirty blocks as they finish writing.  Once
- * done they can clean all the dirty blocks and make them reclaimable.
- */
-void block_clean_all_dirty(void)
-{
-	struct block_cache_instance *inst = &global_block_cache_inst;
-	struct cached_block *cblk;
-	struct cached_block *tmp;
-
-	list_for_each_entry_safe(cblk, tmp, &inst->dirty_list, dirty_head) {
-		list_del_init(&cblk->dirty_head);
-		cblk->dirty = 0;
-		put_cblk(cblk);
-	}
-	inst->nr_dirty = 0;
 }
 
 /*
@@ -715,8 +698,6 @@ void block_exit(void)
 		inst->dev_fd = -1;
 	}
 
-	block_clean_all_dirty();
-
 	list_for_each_entry_safe(cblk, tmp, &inst->submit_list, submit_head)
 		put_cblk(cblk);
 
@@ -727,8 +708,14 @@ void block_exit(void)
 
 	if (inst->cache_ht) {
 		htable_foreach_init(inst->cache_ht, &fe);
-		while ((cblk = (struct cached_block *)htable_foreach(inst->cache_ht, &fe)))
+		while ((cblk = (struct cached_block *)htable_foreach(inst->cache_ht, &fe))) {
+			if (cblk->dirty) {
+				cblk->dirty = 0;
+				list_del_init(&cblk->dirty_head);
+				put_cblk(cblk);
+			}
 			unhash_cblk(inst, cblk);
+		}
 		free(inst->cache_ht);
 		inst->cache_ht = NULL;
 	}

@@ -67,7 +67,6 @@ struct utask {
 	unsigned long magic;
 	struct list_head run_head;
 	struct list_head tsk_head;
-	struct list_head wait_head;
 	unsigned long canceled:1,
 		      finished:1,
 		      destroy_at_finish:1;
@@ -231,8 +230,8 @@ void utask_destroy(struct utask *tsk)
 
 		if (!list_empty(&tsk->run_head))
 			list_del_init(&tsk->run_head);
-		if (!list_empty(&tsk->wait_head))
-			list_del_init(&tsk->wait_head);
+		if (!list_empty(&tsk->tsk_head))
+			list_del_init(&tsk->tsk_head);
 
 		VGS_STACK_DEREGISTER(tsk->vg_stack_id);
 		free(tsk->stack);
@@ -431,7 +430,6 @@ int utask_create_name_nowake(char *name, utask_fn_t fn, void *data, struct utask
 
 	tsk->magic = UTASK_MAGIC;
 	INIT_LIST_HEAD(&tsk->run_head);
-	INIT_LIST_HEAD(&tsk->wait_head);
 	list_add_tail(&tsk->tsk_head, &inst->tsk_list);
 	tsk->canceled = 0;
 	tsk->finished = 0;

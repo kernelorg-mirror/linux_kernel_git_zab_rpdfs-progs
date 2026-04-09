@@ -276,6 +276,8 @@ int proc_recv(struct sockaddr_in *addr, struct rpdfs_msg_header *hdr, void *ctl_
 	ret = utask_create(fn, preq, &tsk);
 	if (ret < 0)
 		free_proc_request(preq);
+	else
+		utask_destroy_at_finish(tsk);
 out:
 	return ret;
 }

@@ -69,7 +69,8 @@ struct utask {
 	struct list_head tsk_head;
 	struct list_head wait_head;
 	unsigned long canceled:1,
-		      finished:1;
+		      finished:1,
+		      destroy_at_finish:1;
 	char *name;
 	u64 id;
 	VGS_DEFINE_STACK_ID(vg_stack_id);
@@ -252,6 +253,16 @@ void utask_destroy_other(struct utask *tsk)
 }
 
 /*
+ * Marks a utask to be destroyed once it returns.  This is used when
+ * creation isn't tracking utasks and so won't be able to call _destroy
+ * to free them.
+ */
+void utask_destroy_at_finish(struct utask *tsk)
+{
+	tsk->destroy_at_finish = 1;
+}
+
+/*
  * Switch to and execute all the utasks on the run list.  Each will
  * either schedule or finish and return.  The run_list can safely be
  * modified by the utasks while they're running.
@@ -274,6 +285,8 @@ int utask_run(void)
 				tsk->finished = 1;
 				if (tsk->destroyer)
 					utask_wake_task(tsk->destroyer);
+				else if (tsk->destroy_at_finish)
+					utask_destroy(tsk);
 			}
 		}
 

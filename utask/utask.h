@@ -145,6 +145,7 @@ void utask_cancel(struct utask *tsk);
 bool utask_am_canceled(void);
 void utask_destroy(struct utask *tsk);
 void utask_destroy_other(struct utask *tsk);
+void utask_destroy_at_finish(struct utask *tsk);
 void utask_init_wait_queue(struct utask_wait_queue *wq);
 bool utask_waitqueue_active(struct utask_wait_queue *wq);
 void utask_prepare_wait(struct utask_wait_queue *wq, struct utask_wait_entry *wait);

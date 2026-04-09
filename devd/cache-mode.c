@@ -59,7 +59,8 @@
  * back-to-back sends don't end up processed out of order on the
  * receiver.  This avoids round-trips to serialize the two messages or
  * managing windows of out-of-order received messages to be processed
- * once their sequence is resolved.
+ * once their sequence is resolved.  (Sending a grant and then revoke is
+ * the troubling case here.)
  */
 
 static struct cache_mode_instance {
@@ -435,10 +436,9 @@ restart:
 			if (clb == req || compatible_modes(clb->grant, req->request))
 				continue;
 
-
 			saw_incompat = true;
 
-			if (!clb->revoke || compat < clb->revoke) {
+			if (!clb->revoke) {
 				ret = send_cache_mode(inst, clb, RPDFS_MSG_BLOCK_REVOKE_MODE,
 						      compat);
 				BUG_ON(ret < 0); /* evict?  shutdown? */
@@ -557,16 +557,9 @@ out:
 }
 
 /*
- * We can only receive confirms in response to having sent revokes lower
- * the client's granted mode while processing an incompatible request.
- *
- * We can send back-to-back revokes for decreasing modes.  We can send
- * READ, then NONE.  We can receive a corresponding stream of confirms
- * response.
- *
- * We can receive a confirm for an even lesser mode than what we revoked
- * in the case that the client shrank and removed their cached block
- * before they received the revoke.
+ * We must receive one confirm matching the mode of each revoke we send.
+ * We'll only ever have one revoke message in flight waiting for a
+ * confirm.
  */
 int cache_mode_confirm(struct sockaddr_in *addr, u64 bnr, u8 mode)
 {
@@ -579,13 +572,8 @@ int cache_mode_confirm(struct sockaddr_in *addr, u64 bnr, u8 mode)
 		goto out;
 	}
 
-	clb = search_client_blocks(inst, addr, bnr, true, NULL);
-	if (IS_ERR(clb)) {
-		ret = PTR_ERR(clb);
-		goto out;
-	}
-
-	if (mode > clb->grant || !clb->revoke) {
+	clb = search_client_blocks(inst, addr, bnr, false, NULL);
+	if (!clb || mode != clb->revoke) {
 		ret = -EPROTO;
 		goto out;
 	}
@@ -594,11 +582,9 @@ int cache_mode_confirm(struct sockaddr_in *addr, u64 bnr, u8 mode)
 		clb->grant = mode;
 	else
 		clb->grant = RPDFS_CACHE_MODE_NULL;
-	if (mode <= clb->revoke) {
-		if (clb->revoke == RPDFS_CACHE_MODE_NONE)
-			inst->nr_revoke_none--;
-		clb->revoke = RPDFS_CACHE_MODE_NULL;
-	}
+	if (clb->revoke == RPDFS_CACHE_MODE_NONE)
+		inst->nr_revoke_none--;
+	clb->revoke = RPDFS_CACHE_MODE_NULL;
 
 	dtracef("cache_mode_confirm", "clb "CLB_FMT, CLB_ARG(clb));
 	try_free_null_client_block(inst, clb);

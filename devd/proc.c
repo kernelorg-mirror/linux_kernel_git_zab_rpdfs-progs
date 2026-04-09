@@ -118,6 +118,8 @@ static void block_write_utask(void *data)
 	in_det.place_lo = bw->det.place_lo;
 	in_det.place_hi = bw->det.place_hi;
 
+	cache_mode_accessed(&preq->addr, bnr);
+
 	ret = bstore_write(bnr, preq->data_page, &in_det);
 
 	wr.bnr = bw->bnr;

@@ -9,6 +9,7 @@ int cache_mode_grant_bulk_uncached(struct sockaddr_in *addr, int mode, u64 bmap_
 				   unsigned long *bmap, size_t size);
 void cache_mode_undo_bulk_grant(struct sockaddr_in *addr, u64 bnr,
 				unsigned long *bmap, size_t size);
+void cache_mode_accessed(struct sockaddr_in *addr, u64 bnr);
 
 int cache_mode_init(void);
 void cache_mode_exit(void);

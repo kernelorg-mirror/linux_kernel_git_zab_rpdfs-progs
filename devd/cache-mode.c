@@ -190,6 +190,8 @@ static void insert_client_block(struct cache_mode_instance *inst, struct client_
 	list_add(&clb->lru_head, &inst->lru_list);
 	inst->nr_blocks++;
 
+	dtracef("cache_mode_insert", "clb %p "CLB_FMT, clb, CLB_ARG(clb));
+
 	if (only_client_with_block(clb))
 		free_map_add_cached(clb->bnr, 1);
 }
@@ -250,10 +252,8 @@ static struct client_block *search_client_blocks(struct cache_mode_instance *ins
 
 	if (!clb && alloc) {
 		clb = alloc_client_block(addr, bnr);
-		if (!IS_ERR(clb)) {
+		if (!IS_ERR(clb))
 			insert_client_block(inst, clb, parent, link);
-			dtracef("cache_mode_alloc", "clb %p "CLB_FMT, clb, CLB_ARG(clb));
-		}
 	}
 
 	return clb;
@@ -320,8 +320,6 @@ static struct client_block *find_request(struct cache_mode_instance *inst, u64 b
 	next = NULL;
 
 	for_each_client_block(inst, bnr, clb) {
-		dtracef("cache_mode_find_req", "clb "CLB_FMT, CLB_ARG(clb));
-
 		if (clb->request < RPDFS_CACHE_MODE_READ || clb->revoke)
 			continue;
 
@@ -430,7 +428,6 @@ restart:
 	while ((req = find_request(inst, bnr))) {
 
 		dtracef("cache_mode_process", "clb "CLB_FMT, CLB_ARG(req));
-
 		compat = most_compatible(req->request);
 		saw_incompat = false;
 
@@ -438,7 +435,6 @@ restart:
 			if (clb == req || compatible_modes(clb->grant, req->request))
 				continue;
 
-			dtracef("cache_mode_incompat", "clb "CLB_FMT, CLB_ARG(clb));
 
 			saw_incompat = true;
 
@@ -450,6 +446,7 @@ restart:
 				clb->revoke = compat;
 				if (clb->revoke == RPDFS_CACHE_MODE_NONE)
 					inst->nr_revoke_none++;
+				dtracef("cache_mode_revoke", "clb "CLB_FMT, CLB_ARG(clb));
 			}
 		}
 
@@ -479,7 +476,6 @@ restart:
 		req->is_read = 0;
 		req->processing = 0;
 		req->read_data = 0;
-
 		dtracef("cache_mode_grant", "clb "CLB_FMT, CLB_ARG(req));
 	}
 
@@ -504,6 +500,7 @@ static void try_shrink_lru(struct cache_mode_instance *inst)
 
 			clb->revoke = RPDFS_CACHE_MODE_NONE;
 			inst->nr_revoke_none++;
+			dtracef("cache_mode_shrink", "clb "CLB_FMT, CLB_ARG(clb));
 		}
 
 		list_move_tail(&clb->lru_head, &inst->lru_list);
@@ -549,12 +546,13 @@ int cache_mode_request(struct sockaddr_in *addr, u64 bnr, u8 mode, bool is_read,
 		clb->read_data = !!with_data;
 	}
 
-	dtracef("cache_mode_request", "mode %u clb "CLB_FMT, mode, CLB_ARG(clb));
-
+	dtracef("cache_mode_request", "clb "CLB_FMT, CLB_ARG(clb));
 	ret = 0;
 out:
 	process_requests(inst, bnr);
 	try_shrink_lru(inst);
+	dtracef("cache_mode_request_ret", "addr "IPV4F" bnr %llu mode %u ret %d",
+		IPV4A(addr), bnr, mode, ret);
 	return ret;
 }
 
@@ -573,7 +571,7 @@ out:
 int cache_mode_confirm(struct sockaddr_in *addr, u64 bnr, u8 mode)
 {
 	struct cache_mode_instance *inst = &global_cache_mode_inst;
-	struct client_block *clb;
+	struct client_block *clb = NULL;
 	int ret;
 
 	if (mode < RPDFS_CACHE_MODE_NONE || mode > RPDFS_CACHE_MODE_READ) {
@@ -602,13 +600,15 @@ int cache_mode_confirm(struct sockaddr_in *addr, u64 bnr, u8 mode)
 		clb->revoke = RPDFS_CACHE_MODE_NULL;
 	}
 
-	dtracef("cache_mode_confirm", "mode %u clb "CLB_FMT, mode, CLB_ARG(clb));
+	dtracef("cache_mode_confirm", "clb "CLB_FMT, CLB_ARG(clb));
 	try_free_null_client_block(inst, clb);
 
 	ret = 0;
 out:
 	process_requests(inst, bnr);
 	try_shrink_lru(inst);
+	dtracef("cache_mode_confirm_ret", "addr "IPV4F" bnr %llu mode %u ret %d",
+		IPV4A(addr), bnr, mode, ret);
 	return ret;
 }
 
@@ -660,6 +660,7 @@ int cache_mode_grant_bulk_uncached(struct sockaddr_in *addr, int mode, u64 bmap_
 			}
 
 			ins->grant = mode;
+			dtracef("cache_mode_grant_bulk", "clb "CLB_FMT, CLB_ARG(ins));
 
 			insert_between(inst, prev, ins, clb);
 			prev = ins;
@@ -714,7 +715,7 @@ void cache_mode_undo_bulk_grant(struct sockaddr_in *addr, u64 bnr,
 		BUG_ON(IS_ERR_OR_NULL(clb));
 
 		clb->grant = RPDFS_CACHE_MODE_NULL;
-
+		dtracef("cache_mode_undo_bulk", "clb "CLB_FMT, CLB_ARG(clb));
 		try_free_null_client_block(inst, clb);
 	}
 }

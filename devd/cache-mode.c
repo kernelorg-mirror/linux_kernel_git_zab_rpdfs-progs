@@ -221,7 +221,8 @@ static void insert_between(struct cache_mode_instance *inst, struct client_block
 
 static struct client_block *search_client_blocks(struct cache_mode_instance *inst,
 						 struct sockaddr_in *addr, u64 bnr,
-						 bool alloc, struct client_block **next)
+						 bool alloc, struct client_block **prev,
+						 struct client_block **next)
 {
 	struct rb_node **link = &inst->client_blocks_root.rb_node;
 	struct client_block *clb = NULL;
@@ -231,6 +232,8 @@ static struct client_block *search_client_blocks(struct cache_mode_instance *ins
 
 	key.bnr = bnr;
 	clb_addr_from_sin(&key, addr);
+	if (prev)
+		*prev = NULL;
 	if (next)
 		*next = NULL;
 
@@ -245,6 +248,8 @@ static struct client_block *search_client_blocks(struct cache_mode_instance *ins
 				*next = clb;
 		} else if (cmp > 0) {
 			link = &(*link)->rb_right;
+			if (prev)
+				*prev = clb;
 		} else {
 			break;
 		}
@@ -285,7 +290,7 @@ static struct client_block *first_client_block(struct cache_mode_instance *inst,
 	struct client_block *clb;
 
 	/* can never have a client block with 0 addr, can only get next */
-	search_client_blocks(inst, &addr, bnr, false, &clb);
+	search_client_blocks(inst, &addr, bnr, false, NULL, &clb);
 	if (clb && clb->bnr != bnr)
 		clb = NULL;
 	return clb;
@@ -528,7 +533,7 @@ int cache_mode_request(struct sockaddr_in *addr, u64 bnr, u8 mode, bool is_read,
 		goto out;
 	}
 
-	clb = search_client_blocks(inst, addr, bnr, true, NULL);
+	clb = search_client_blocks(inst, addr, bnr, true, NULL, NULL);
 	if (IS_ERR(clb)) {
 		ret = PTR_ERR(clb);
 		goto out;
@@ -572,7 +577,7 @@ int cache_mode_confirm(struct sockaddr_in *addr, u64 bnr, u8 mode)
 		goto out;
 	}
 
-	clb = search_client_blocks(inst, addr, bnr, false, NULL);
+	clb = search_client_blocks(inst, addr, bnr, false, NULL, NULL);
 	if (!clb || mode != clb->revoke) {
 		ret = -EPROTO;
 		goto out;
@@ -616,30 +621,33 @@ int cache_mode_grant_bulk_uncached(struct sockaddr_in *addr, int mode, u64 bmap_
 {
 	struct cache_mode_instance *inst = &global_cache_mode_inst;
 	static struct sockaddr_in zero_addr = {0, };
+	struct client_block *found;
 	struct client_block *prev;
+	struct client_block *next;
 	struct client_block *ins;
-	struct client_block *clb;
 	size_t undo_size = 0;
 	unsigned long b;
 	int count = 0;
 	u64 dist;
+	u64 bnr;
 	int ret;
 
 	/* so we don't accidentally grant null/none, wouldn't make sense */
 	if (WARN_ON_ONCE(mode < RPDFS_CACHE_MODE_READ))
 		return -EINVAL;
 
-	b = find_next_bit(bmap, size, 0);
-	search_client_blocks(inst, &zero_addr, bmap_bnr, false, &clb);
-	prev = prev_clb(clb);
-
 	dist = bstore_contig_devd_block_bnr_distance();
+
+	b = find_next_bit(bmap, size, 0);
+	bnr = bmap_bnr + (b * dist);
+	found = search_client_blocks(inst, &zero_addr, bnr, false, &prev, &next);
+	if (found)
+		next = found;
 
 	while (b < size) {
 		/* grant mode for uncached set bits */
-		while (b < size &&
-		       (!clb || (bmap_bnr + (b * dist) < clb->bnr))) {
-			ins = alloc_client_block(addr, bmap_bnr + b);
+		while ((b < size) && (!prev || (bnr > prev->bnr)) && (!next || (bnr < next->bnr))) {
+			ins = alloc_client_block(addr, bnr);
 			if (IS_ERR(ins)) {
 				ret = PTR_ERR(ins);
 				goto out;
@@ -648,26 +656,27 @@ int cache_mode_grant_bulk_uncached(struct sockaddr_in *addr, int mode, u64 bmap_
 			ins->grant = mode;
 			dtracef("cache_mode_grant_bulk", "clb "CLB_FMT, CLB_ARG(ins));
 
-			insert_between(inst, prev, ins, clb);
+			insert_between(inst, prev, ins, next);
 			prev = ins;
 			undo_size = b + 1;
 			count++;
 
 			b = find_next_bit(bmap, size, b + 1);
+			bnr = bmap_bnr + (b * dist);
 		}
 
 		/* clear cached bits */
-		if (b < size &&
-		    (clb && (bmap_bnr + (b * dist) == clb->bnr))) {
+		if ((b < size) && ((prev && (bnr == prev->bnr)) || (next && (bnr == next->bnr)))) {
 			clear_bit(b, bmap);
 			b = find_next_bit(bmap, size, b + 1);
+			bnr = bmap_bnr + (b * dist);
 		}
 
-		/* always advance the cached bnr.. could be many clients */
-		do {
-			prev = clb;
-			clb = next_clb(prev);
-		} while (prev && clb && prev->bnr == clb->bnr);
+		/* skip client blocks until we could ins or clear the next set bit */
+		while (next && bnr > next->bnr) {
+			prev = next;
+			next = next_clb(next);
+		}
 	}
 
 	ret = 0;
@@ -697,7 +706,7 @@ void cache_mode_undo_bulk_grant(struct sockaddr_in *addr, u64 bnr,
 	dist = bstore_contig_devd_block_bnr_distance();
 
 	for (b = 0; (b = find_next_bit(bmap, size, b)) < size; b++) {
-		clb = search_client_blocks(inst, addr, bnr + (b * dist), false, NULL);
+		clb = search_client_blocks(inst, addr, bnr + (b * dist), false, NULL, NULL);
 		BUG_ON(IS_ERR_OR_NULL(clb));
 
 		clb->grant = RPDFS_CACHE_MODE_NULL;
@@ -711,7 +720,7 @@ void cache_mode_accessed(struct sockaddr_in *addr, u64 bnr)
 	struct cache_mode_instance *inst = &global_cache_mode_inst;
 	struct client_block *clb;
 
-	clb = search_client_blocks(inst, addr, bnr, false, NULL);
+	clb = search_client_blocks(inst, addr, bnr, false, NULL, NULL);
 	if (!IS_ERR_OR_NULL(clb))
 		lru_accessed(inst, clb);
 }

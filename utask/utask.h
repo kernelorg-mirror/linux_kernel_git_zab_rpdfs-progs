@@ -161,7 +161,7 @@ struct io_uring_sqe *utask_get_sqe_waiter(struct utask_cqe_waiter *waiter);
 
 void utask_print_tasks(void);
 
-int utask_init(u32 entries);
+int utask_init();
 void utask_exit(void);
 
 #endif

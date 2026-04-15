@@ -97,7 +97,6 @@ static int parse_devd_opt(int c, char *str, void *arg)
 }
 
 #define BLOCK_QUEUE_DEPTH	32
-#define NET_QUEUE_DEPTH		16 /* XXX no idea */
 
 struct devd_main {
 	struct devd_options opts;
@@ -173,7 +172,7 @@ int main(int argc, char **argv)
 	}
 
 	ret = (dm.opts.trace_path ? dtracef_init(dm.opts.trace_path) : 0) ?:
-	      utask_init(BLOCK_QUEUE_DEPTH + NET_QUEUE_DEPTH);
+	      utask_init();
 	if (ret < 0)
 		goto out;
 

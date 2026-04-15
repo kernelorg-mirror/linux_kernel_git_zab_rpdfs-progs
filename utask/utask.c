@@ -558,14 +558,22 @@ void utask_print_tasks(void)
 	}
 }
 
-int utask_init(u32 entries)
+/*
+ * The utask net layer keeps per-connection entries in flight which
+ * means the number of required uring entries depends on the number of
+ * clients.  So we request the max uring entries to extend the limit on
+ * the number of connections.
+ */
+#define MAX_ENTRIES 32768
+
+int utask_init(void)
 {
 	struct utask_instance *inst = &global_utask_inst;
 	int ret;
 
 	inst->next_id = 1;
 
-	ret = io_uring_queue_init(entries, &inst->ring, IORING_SETUP_COOP_TASKRUN |
+	ret = io_uring_queue_init(MAX_ENTRIES, &inst->ring, IORING_SETUP_COOP_TASKRUN |
 				  IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
 	if (ret > 0)
 		inst->ring_initialized = true;

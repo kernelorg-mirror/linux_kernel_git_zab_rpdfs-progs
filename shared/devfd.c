@@ -52,7 +52,7 @@ out:
 	return ret;
 }
 
-int devfd_write_zeros(int fd, u64 start, u64 len)
+static int range_command(int fd, int blk, int fal, u64 start, u64 len)
 {
 	struct stat st;
 	u64 range[2];
@@ -66,13 +66,13 @@ int devfd_write_zeros(int fd, u64 start, u64 len)
 		range[0] = start;
 		range[1] = len;
 
-		if (ioctl(fd, BLKZEROOUT, range)) {
+		if (ioctl(fd, blk, range)) {
 			ret = -errno;
 			goto out;
 		}
 
 	} else if (S_ISREG(st.st_mode)) {
-		ret = fallocate(fd, FALLOC_FL_ZERO_RANGE, start, len);
+		ret = fallocate(fd, fal, start, len);
 		if (ret == 0)
 			ret = fsync(fd);
 		if (ret < 0) {
@@ -87,4 +87,14 @@ int devfd_write_zeros(int fd, u64 start, u64 len)
 	ret = 0;
 out:
 	return ret;
+}
+
+int devfd_write_zeros(int fd, u64 start, u64 len)
+{
+	return range_command(fd, BLKZEROOUT, FALLOC_FL_ZERO_RANGE, start, len);
+}
+
+int devfd_discard(int fd, u64 start, u64 len)
+{
+	return range_command(fd, BLKDISCARD, FALLOC_FL_PUNCH_HOLE, start, len);
 }

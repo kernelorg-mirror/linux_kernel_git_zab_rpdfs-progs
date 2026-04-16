@@ -6,5 +6,6 @@
 
 int devfd_get_size(int fd, u64 *size_ret);
 int devfd_write_zeros(int fd, u64 start, u64 len);
+int devfd_discard(int fd, u64 start, u64 len);
 
 #endif

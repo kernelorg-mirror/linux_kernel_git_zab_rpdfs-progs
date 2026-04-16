@@ -19,6 +19,7 @@
 #include "shared/lk/build_bug.h"
 #include "shared/lk/crc64.h"
 #include "shared/lk/math.h"
+#include "shared/lk/minmax.h"
 
 #include "shared/devfd.h"
 #include "shared/format-block.h"
@@ -56,6 +57,74 @@ static char *units_str(double x)
 
 #define PCT_F		"%6.2f%%"
 #define PCT_A(a, b)	((double)(a) * 100 / (b))
+
+static void change_flags(int fd, int and, int or)
+{
+	int fl;
+
+	fl = fcntl(fd, F_GETFL);
+	if (fl >= 0)
+		fcntl(fd, F_SETFL, (fl & and) | or);
+}
+
+/*
+ * We saw some nvme devices that didn't implement the discard_zeros
+ * quirk and then had tiny limits on write_zeros so the kernel's bldev
+ * zeroing (falloc or BLK ioctl) took orders of magnitude longer than
+ * just writing zeros :/.
+ */
+#define ZERO_SIZE (32 * 1024 * 1024)
+static int write_zeros(int orig_fd, off_t start, size_t len)
+{
+	char *buf = NULL;
+	bool have_direct;
+	int fd = -1;
+	size_t part;
+	int ret;
+
+	buf = calloc(1, ZERO_SIZE);
+	if (!buf) {
+		ret = -errno;
+		goto out;
+	}
+
+	fd = dup(orig_fd);
+	if (fd < 0) {
+		ret = -errno;
+		goto out;
+	}
+
+	change_flags(fd, ~0, O_DIRECT);
+	ret = fcntl(fd, F_GETFL);
+	have_direct = ret >= 0 && (ret & O_DIRECT);
+
+	while (len > 0) {
+		part = min(ZERO_SIZE, len);
+		ret = pwrite(fd, buf, part, start);
+		if (ret != part) {
+			if (have_direct && (errno == EOPNOTSUPP || errno == EINVAL)) {
+				change_flags(fd, ~O_DIRECT, 0);
+				have_direct = false;
+				continue;
+			}
+			if (ret >= 0)
+				ret = -EIO;
+			else
+				ret = -errno;
+			goto out;
+		}
+		if (!have_direct)
+			posix_fadvise(fd, start, part, POSIX_FADV_DONTNEED);
+		start += part;
+		len -= part;
+	}
+
+out:
+	if (fd >= 0)
+		close(fd);
+	free(buf);
+	return ret;
+}
 
 static int format_device_func(int argc, char **argv)
 {
@@ -132,9 +201,13 @@ static int format_device_func(int argc, char **argv)
 		summary = DIV_ROUND_UP(details, RPDFS_DEV_SUMMARIES_PER_BLOCK);
 	} while (d != details || s != summary);
 
-	ret = devfd_write_zeros(fd, 0, (total - store) * RPDFS_BLOCK_SIZE);
+	/* attempt to discard, fine if not supported */
+	devfd_discard(fd, 0, size);
+
+	/* initialized metadata must be zero, however */
+	ret = write_zeros(fd, 0, (total - store) * RPDFS_BLOCK_SIZE);
 	if (ret < 0) {
-		printf("zeroing metadata: '%s': "ENOF"\n", argv[1], ENOA(-ret));
+		printf("zeroing device metadata blocks: '%s': "ENOF"\n", argv[1], ENOA(-ret));
 		goto out;
 	}
 

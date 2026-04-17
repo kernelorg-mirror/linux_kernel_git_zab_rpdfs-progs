@@ -12,6 +12,7 @@ int bstore_write(u64 dev_bnr, struct page *data_page, struct rpdfs_block_details
 int bstore_get_free_details(u64 bnr, unsigned long *bmap,
 			    struct rpdfs_msg_free_stripe_detail *fsd, size_t size);
 u64 bstore_contig_devd_block_bnr_distance(void);
+void bstore_get_block_counts(struct rpdfs_msg_block_counts_result *bcr);
 
 int bstore_init(u64 nr_devds, u64 this_devd_pos);
 void bstore_exit(void);

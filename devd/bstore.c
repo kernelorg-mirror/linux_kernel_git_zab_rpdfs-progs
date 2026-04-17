@@ -1194,6 +1194,15 @@ out:
 	return ret ?: count;
 }
 
+void bstore_get_block_counts(struct rpdfs_msg_block_counts_result *bcr)
+{
+	struct bstore_instance *inst = &global_bstore_inst;
+
+	bcr->allocated = cpu_to_le64(inst->total_allocated);
+	bcr->inodes = cpu_to_le64(inst->total_inodes);
+	bcr->total = cpu_to_le64(inst->storage_blocks);
+}
+
 /*
  * Return the distance between contiguous devd storage blocks in the fs
  * bnr space.

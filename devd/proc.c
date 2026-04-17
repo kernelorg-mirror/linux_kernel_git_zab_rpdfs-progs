@@ -236,12 +236,27 @@ out:
 	free_proc_request(preq);
 }
 
+static void block_counts_request_utask(void *data)
+{
+	struct proc_request *preq = data;
+	struct rpdfs_msg_block_counts_result bcr;
+	int ret;
+
+	bstore_get_block_counts(&bcr);
+
+	ret = send_hdr(&preq->addr, RPDFS_MSG_BLOCK_COUNTS_RESULT, &bcr, sizeof(bcr), NULL, 0);
+	BUG_ON(ret);
+
+	free_proc_request(preq);
+}
+
 static utask_fn_t proc_utask_fns[] = {
 	[RPDFS_MSG_BLOCK_READ] = block_read_utask,
 	[RPDFS_MSG_BLOCK_WRITE] = block_write_utask,
 	[RPDFS_MSG_BLOCK_REQUEST_MODE] = block_request_mode_utask,
 	[RPDFS_MSG_BLOCK_CONFIRM_MODE] = block_confirm_mode_utask,
 	[RPDFS_MSG_FREE_STRIPE_REQUEST] = free_stripe_request_utask,
+	[RPDFS_MSG_BLOCK_COUNTS_REQUEST] = block_counts_request_utask,
 };
 
 /*

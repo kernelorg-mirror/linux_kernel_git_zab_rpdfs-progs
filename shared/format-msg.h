@@ -21,6 +21,8 @@ enum {
 	RPDFS_MSG_BLOCK_CONFIRM_MODE,
 	RPDFS_MSG_FREE_STRIPE_REQUEST,
 	RPDFS_MSG_FREE_STRIPE_GRANT,
+	RPDFS_MSG_BLOCK_COUNTS_REQUEST,
+	RPDFS_MSG_BLOCK_COUNTS_RESULT,
 	RPDFS_MSG__NR,
 };
 
@@ -173,6 +175,12 @@ struct rpdfs_msg_free_stripe_grant {
 struct rpdfs_msg_free_stripe_detail {
 	__le64 alloc_ctr;
 	__le64 wcount;
+};
+
+struct rpdfs_msg_block_counts_result {
+	__le64 allocated;
+	__le64 inodes;
+	__le64 total;
 };
 
 #endif

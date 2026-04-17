@@ -15,6 +15,7 @@
 #include "shared/lk/string.h"
 #include "shared/lk/overflow.h"
 
+#include "shared/details.h"
 #include "shared/dtracef.h"
 #include "shared/format-block.h"
 #include "shared/format-dev.h"
@@ -1094,7 +1095,8 @@ int bstore_write(u64 bnr, struct page *data_page, struct rpdfs_block_details *in
 
 	/* and dirty the stored block with a reference to the data page */
 	dirty_block(inst, cmt, &pool, map.lba, RPDFS_DEV_BLOCK_TYPE_STORED,
-		    !(le64_to_cpu(stable_det->alloc_ctr) & 1), data_page, NULL, &cblk);
+		    rpdfs_alloc_ctr_is_free(le64_to_cpu(stable_det->alloc_ctr)),
+		    data_page, NULL, &cblk);
 	block_putp(&cblk);
 
 	ret = finish_dirty_commit(inst, &pool);
@@ -1150,7 +1152,7 @@ int bstore_get_free_details(u64 bnr, unsigned long *bmap,
 	for (i = map.bnr == 0 ? 1 : 0; i < size; i++) {
 		det = &dblk->details[map.details_ind + i];
 
-		if (!(le64_to_cpu(det->alloc_ctr) & 1)) {
+		if (rpdfs_alloc_ctr_is_free(le64_to_cpu(det->alloc_ctr))) {
 			set_bit(i, bmap);
 			fsd[i].alloc_ctr = det->alloc_ctr;
 			fsd[i].wcount = det->write_ctr;

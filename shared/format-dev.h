@@ -92,8 +92,8 @@ struct rpdfs_dev_commit_block {
  * The network protocol operates-on per-block details in addition to its
  * contents.
  *
- * The lifetime_ctr is incremented every time the block is allocated or
- * freed.  An allocated block will always have an odd lifetime_ctr.
+ * The alloc_ctr is incremented every time the block is allocated or
+ * freed.  An allocated block will always have an odd alloc_ctr.
  *
  * The write_ctr is incremented every time the block is written and the
  * contents could have changed.  (The server doesn't pay the read IO
@@ -105,8 +105,7 @@ struct rpdfs_block_details {
 	__le64 place_lo;
 	__le64 place_hi;
 	__le32 crc;
-	__u8 _pad[3];
-	__u8 type;
+	__u8 _pad[4];
 };
 
 struct rpdfs_dev_details_block {
@@ -129,6 +128,11 @@ struct rpdfs_dev_summary_block {
 		 * correctly summarize zeroed details blocks.
 		 */
 		u8 alloc_count;
+		/*
+		 * The total number of entries in the details block that
+		 * are allocated and have an inode place type.
+		 */
+		u8 nr_inodes;
 	} summaries[];
 };
 

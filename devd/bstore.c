@@ -15,11 +15,13 @@
 #include "shared/lk/string.h"
 #include "shared/lk/overflow.h"
 
+#include "shared/compare.h"
 #include "shared/details.h"
 #include "shared/dtracef.h"
 #include "shared/format-block.h"
 #include "shared/format-dev.h"
 #include "shared/hash_table.h"
+#include "shared/place.h"
 #include "shared/string_wrappers.h"
 
 #include "utask/block.h"
@@ -86,6 +88,9 @@ static struct bstore_instance {
 	u64 storage_lba;
 	u64 storage_blocks;
 
+	/* sum of nr_inodes in committed summaries */
+	u64 total_inodes;
+
 	struct utask *commit_tsk;
 	struct utask_wait_queue commit_wq;
 	struct rpdfs_dev_commit_block *dirty_cmt;
@@ -101,6 +106,13 @@ static struct bstore_instance {
 		struct cached_block *cblk;
 		unsigned int e;
 	} replay_blocks[RPDFS_DEV_COMMIT_MAX_ENTRIES];
+
+	/* tracking summaries that changed during a commit */
+	unsigned int nr_changes;
+	struct summary_change {
+		u64 bnr;
+		struct rpdfs_dev_summary sum;
+	} changing_summaries[RPDFS_DEV_COMMIT_MAX_ENTRIES];
 
 } global_bstore_inst = {
 	.cmt_dirty_list = LIST_HEAD_INIT(global_bstore_inst.cmt_dirty_list),
@@ -592,26 +604,17 @@ static void dirty_block(struct bstore_instance *inst, struct rpdfs_dev_commit_bl
 	dtracef("bstore_dirty_block", "lba %llu type %u journ_lba %llu", lba, type, dlba);
 }
 
-/*
- * A convenience for callers who are working with blocks they know must
- * be pinned and dirty, asserting if they're not.
- */
-static void already_dirty_block(struct bstore_instance *inst, u64 lba, struct cached_block **cblk)
-{
-	u64 dlba;
-	int ret;
-
-	/* only commit blocks can have an lba of 0, this is called for others */
-	dlba = dirty_lba(inst, lba);
-	BUG_ON(dlba == 0);
-
-	ret = block_lookup(dlba, cblk);
-	BUG_ON(ret < 0);
-}
-
 static bool details_changed(struct rpdfs_block_details *old, struct rpdfs_block_details *new)
 {
 	return memcmp(old, new, sizeof(struct rpdfs_block_details)) != 0;
+}
+
+static inline bool is_allocated_inode(struct rpdfs_block_details *det)
+{
+	u128 place = rpdfs_place_combine_le(det->place_lo, det->place_hi);
+
+	return !rpdfs_alloc_ctr_is_free(le64_to_cpu(det->alloc_ctr)) &&
+	       (rpdfs_place_type(place) == RPDFS_PLACE_INODE);
 }
 
 /*
@@ -622,15 +625,11 @@ static bool details_changed(struct rpdfs_block_details *old, struct rpdfs_block_
 static bool summary_changed(struct rpdfs_block_details *old, struct rpdfs_block_details *new,
 			    struct rpdfs_dev_summary *delta)
 {
-	bool changed = false;
+	delta->alloc_count = (u8)(!rpdfs_alloc_ctr_is_free(le64_to_cpu(new->alloc_ctr))) -
+			     (u8)(!rpdfs_alloc_ctr_is_free(le64_to_cpu(old->alloc_ctr)));
+	delta->nr_inodes = (u8)is_allocated_inode(new) - (u8)is_allocated_inode(old);
 
-	if (new->alloc_ctr != old->alloc_ctr) {
-		delta->alloc_count = (u8)(!rpdfs_alloc_ctr_is_free(le64_to_cpu(new->alloc_ctr))) -
-				     (u8)(!rpdfs_alloc_ctr_is_free(le64_to_cpu(old->alloc_ctr)));
-		changed = true;
-	}
-
-	return changed;
+	return delta->alloc_count | delta->nr_inodes;
 }
 
 static void add_summary(struct rpdfs_dev_summary *summary, struct rpdfs_dev_summary *delta)
@@ -638,28 +637,79 @@ static void add_summary(struct rpdfs_dev_summary *summary, struct rpdfs_dev_summ
 	summary->alloc_count += delta->alloc_count;
 }
 
-static void set_free_count(u64 bnr, struct rpdfs_dev_summary_block *sblk, unsigned int i)
+static void set_free_count(u64 bnr, u8 alloc_count)
 {
-	free_map_set_free(bnr, RPDFS_DEV_DETAILS_PER_BLOCK  - sblk->summaries[i].alloc_count);
+	free_map_set_free(bnr, RPDFS_DEV_DETAILS_PER_BLOCK - alloc_count);
+}
+
+static int compar_summary_change(const void *A, const void *B)
+{
+	const struct summary_change *a = A;
+	const struct summary_change *b = B;
+
+	return rpdfs_compare(a->bnr, b->bnr);
 }
 
 /*
- * Called for each details block that was written in the commit.  We
- * look up its summary entry in its summary block that must also have
- * been written.  We set that free count in the free-map.
+ * A commit can change a summary entry for each details block in the
+ * commit.  If the commit succeeds we want to update our runtime
+ * tracking of the summaries.  We record the changes in summaries as
+ * they happen rather than sweeping all the old and new versions of
+ * details blocks after the commit to rediscover what changed.  At worst
+ * there can be order hundreds of changed entries so we'd rather not
+ * just linearly search an array.
  */
-static void set_details_free(struct bstore_instance *inst, u64 det_lba)
+static void register_changed_summary(struct bstore_instance *inst, u64 det_lba,
+				     struct rpdfs_dev_summary *old,
+				     struct rpdfs_dev_summary *delta)
 {
-	struct rpdfs_dev_summary_block *sblk;
-	struct cached_block *sum_cblk;
 	struct bnr_lba_mapping map;
+	struct summary_change key;
+	struct summary_change *chg;
 
 	map_details_lba(inst, &map, det_lba);
+	key.bnr = map.bnr;
 
-	already_dirty_block(inst, map.summary_lba, &sum_cblk);
-	sblk = block_data_buf(sum_cblk);
-	set_free_count(map.bnr, sblk, map.summary_ind);
-	block_put(sum_cblk);
+	if (inst->nr_changes > 1)
+		chg = bsearch(&key, inst->changing_summaries, inst->nr_changes,
+			      sizeof(inst->changing_summaries[0]), compar_summary_change);
+	else if (inst->nr_changes == 1 && inst->changing_summaries[0].bnr == key.bnr)
+		chg = &inst->changing_summaries[0];
+	else
+		chg = NULL;
+
+	if (chg == NULL) {
+		chg = &inst->changing_summaries[inst->nr_changes++];
+		chg->bnr = map.bnr;
+		memset(chg, 0, sizeof(struct summary_change));
+	}
+
+	/* not all details are tracked the same, see apply_ */
+	chg->sum.nr_inodes += delta->nr_inodes;
+	chg->sum.alloc_count = old->alloc_count + delta->alloc_count;
+
+	if ((chg == &inst->changing_summaries[inst->nr_changes - 1]) &&
+	    (inst->nr_changes > 1) && (chg->bnr < (chg - 1)->bnr))
+		qsort(inst->changing_summaries, inst->nr_changes,
+		      sizeof(inst->changing_summaries[0]), compar_summary_change);
+}
+
+static void apply_changed_summaries(struct bstore_instance *inst, int err)
+{
+	struct summary_change *chg;
+	int i;
+
+	if (err < 0)
+		goto out;
+
+	for (i = 0; i < inst->nr_changes; i++) {
+		chg = &inst->changing_summaries[i];
+
+		set_free_count(chg->bnr, chg->sum.alloc_count);
+		inst->total_inodes += (s8)chg->sum.nr_inodes;
+	}
+out:
+	inst->nr_changes = 0;
 }
 
 /*
@@ -684,24 +734,6 @@ static void update_commit_lbas(struct bstore_instance *inst, struct rpdfs_dev_co
 		else
 			htable_insert(inst->stable_ht, le64_to_cpu(ent->lba),
 						       le64_to_cpu(ent->journ_lba));
-	}
-}
-
-/*
- * This is called before the stable/dirty hash tables are updated so the
- * committed blocks can be acquired with already_dirty_block.
- */
-static void update_committed_blocks(struct bstore_instance *inst,
-				    struct rpdfs_dev_commit_block *cmt)
-{
-	struct rpdfs_dev_commit_entry *ent;
-	int i;
-
-	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
-		ent = &cmt->entries[i];
-
-		if (ent->type == RPDFS_DEV_BLOCK_TYPE_DETAILS)
-			set_details_free(inst, le64_to_cpu(ent->lba));
 	}
 }
 
@@ -766,8 +798,8 @@ static void write_dirty_commit(struct bstore_instance *inst, struct rpdfs_dev_co
 	inst->commit_phase++;
 
 	ret = block_write_dirty(&inst->cmt_dirty_list);
+	apply_changed_summaries(inst, ret);
 	if (ret == 0) {
-		update_committed_blocks(inst, cmt);
 		update_commit_lbas(inst, cmt);
 		inst->stable_cmt = *cmt;
 	}
@@ -1025,6 +1057,7 @@ int bstore_write(u64 bnr, struct page *data_page, struct rpdfs_block_details *in
 {
 	struct bstore_instance *inst = &global_bstore_inst;
 	struct rpdfs_dev_details_block *dblk;
+	struct rpdfs_dev_summary_block *stable_sblk;
 	struct rpdfs_dev_summary_block *sblk;
 	struct rpdfs_dev_commit_block *cmt;
 	struct rpdfs_block_details *stable_det = NULL;
@@ -1074,8 +1107,11 @@ int bstore_write(u64 bnr, struct page *data_page, struct rpdfs_block_details *in
 	if (summary_changed(stable_det, in_det, &delta)) {
 		dirty_block(inst, cmt, &pool, map.summary_lba, RPDFS_DEV_BLOCK_TYPE_SUMMARY, false,
 			    NULL, sum_cblk, &cblk);
+		stable_sblk = block_data_buf(sum_cblk);
 		sblk = block_data_buf(cblk);
 		add_summary(&sblk->summaries[map.summary_ind], &delta);
+		register_changed_summary(inst, map.details_lba,
+					 &stable_sblk->summaries[map.summary_ind], &delta);
 		block_putp(&cblk);
 	}
 
@@ -1444,7 +1480,9 @@ static int load_summary_block(struct bstore_instance *inst, u64 lba)
 	for (i = 0; i < RPDFS_DEV_SUMMARIES_PER_BLOCK; i++) {
 		if (sblk->summaries[i].alloc_count != RPDFS_DEV_DETAILS_PER_BLOCK)
 			set_free_count(map.bnr + (i * RPDFS_DEV_DETAILS_PER_BLOCK * inst->nr_devds),
-				       sblk, i);
+				       sblk->summaries[i].alloc_count);
+
+		inst->total_inodes += sblk->summaries[i].nr_inodes;
 	}
 	block_put(cblk);
 

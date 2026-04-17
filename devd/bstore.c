@@ -609,17 +609,33 @@ static void already_dirty_block(struct bstore_instance *inst, u64 lba, struct ca
 	BUG_ON(ret < 0);
 }
 
-static void summarize_details_block(struct rpdfs_dev_details_block *dblk,
-				    struct rpdfs_dev_summary *summary)
+static bool details_changed(struct rpdfs_block_details *old, struct rpdfs_block_details *new)
 {
-	int i;
+	return memcmp(old, new, sizeof(struct rpdfs_block_details)) != 0;
+}
 
-	summary->alloc_count = 0;
+/*
+ * Returns true if the summary entry would change when the new details
+ * replace the old.  The change in the summary is stored in delta so it
+ * can be added to the existing summary.
+ */
+static bool summary_changed(struct rpdfs_block_details *old, struct rpdfs_block_details *new,
+			    struct rpdfs_dev_summary *delta)
+{
+	bool changed = false;
 
-	for (i = 0; i < RPDFS_DEV_DETAILS_PER_BLOCK; i++) {
-		if (le64_to_cpu(dblk->details[i].alloc_ctr) & 1)
-			summary->alloc_count++;
+	if (new->alloc_ctr != old->alloc_ctr) {
+		delta->alloc_count = (u8)(!rpdfs_alloc_ctr_is_free(le64_to_cpu(new->alloc_ctr))) -
+				     (u8)(!rpdfs_alloc_ctr_is_free(le64_to_cpu(old->alloc_ctr)));
+		changed = true;
 	}
+
+	return changed;
+}
+
+static void add_summary(struct rpdfs_dev_summary *summary, struct rpdfs_dev_summary *delta)
+{
+	summary->alloc_count += delta->alloc_count;
 }
 
 static void set_free_count(u64 bnr, struct rpdfs_dev_summary_block *sblk, unsigned int i)
@@ -690,32 +706,6 @@ static void update_committed_blocks(struct bstore_instance *inst,
 }
 
 /*
- * The current dirty commit modified the given details block.  Update
- * its entry in its summary block.
- */
-static void update_dirty_summary(struct bstore_instance *inst, u64 det_lba)
-{
-	struct rpdfs_dev_details_block *dblk;
-	struct rpdfs_dev_summary_block *sblk;
-	struct cached_block *det_cblk;
-	struct cached_block *sum_cblk;
-	struct bnr_lba_mapping map;
-
-	map_details_lba(inst, &map, det_lba);
-
-	already_dirty_block(inst, det_lba, &det_cblk);
-	already_dirty_block(inst, map.summary_lba, &sum_cblk);
-
-	dblk = block_data_buf(det_cblk);
-	sblk = block_data_buf(sum_cblk);
-
-	summarize_details_block(dblk, &sblk->summaries[map.summary_ind]);
-
-	block_put(det_cblk);
-	block_put(sum_cblk);
-}
-
-/*
  * Write out the current dirty commit.
  *
  * This is woken by tasks once they've successfully dirtied blocks in
@@ -749,13 +739,6 @@ static void write_dirty_commit(struct bstore_instance *inst, struct rpdfs_dev_co
 		le64_to_cpu(cmt->oldest_commit_ctr), le64_to_cpu(cmt->journal_head_ctr),
 		le64_to_cpu(cmt->journal_tail_ctr), le16_to_cpu(cmt->nr_entries),
 		le16_to_cpu(cmt->nr_in_journal));
-
-	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
-		ent = &cmt->entries[i];
-
-		if (ent->type == RPDFS_DEV_BLOCK_TYPE_DETAILS)
-			update_dirty_summary(inst, le64_to_cpu(ent->lba));
-	}
 
 	/* finalize the crcs on all the blocks in the commit */
 	for (i = 0; i < le16_to_cpu(cmt->nr_entries); i++) {
@@ -1042,12 +1025,13 @@ int bstore_write(u64 bnr, struct page *data_page, struct rpdfs_block_details *in
 {
 	struct bstore_instance *inst = &global_bstore_inst;
 	struct rpdfs_dev_details_block *dblk;
+	struct rpdfs_dev_summary_block *sblk;
 	struct rpdfs_dev_commit_block *cmt;
 	struct rpdfs_block_details *stable_det = NULL;
-	struct rpdfs_block_details *det;
 	struct cached_block *det_cblk = NULL;
 	struct cached_block *sum_cblk = NULL;
 	struct cached_block *cblk = NULL;
+	struct rpdfs_dev_summary delta;
 	struct bnr_lba_mapping map;
 	LIST_HEAD(pool);
 	u64 nr;
@@ -1077,21 +1061,23 @@ int bstore_write(u64 bnr, struct page *data_page, struct rpdfs_block_details *in
 	dblk = block_data_buf(det_cblk);
 	stable_det = &dblk->details[map.details_ind];
 
-	/* update the dirty block details for the write, only write_ctr for now */
-	dirty_block(inst, cmt, &pool, map.details_lba, RPDFS_DEV_BLOCK_TYPE_DETAILS, false,
-		    NULL, det_cblk, &cblk);
-	dblk = block_data_buf(cblk);
-	det = &dblk->details[map.details_ind];
-	det->alloc_ctr = in_det->alloc_ctr;
-	det->write_ctr = in_det->write_ctr;
-	det->place_lo = in_det->place_lo;
-	det->place_hi = in_det->place_hi;
-	block_putp(&cblk);
+	/* dirty and update the details if they changed */
+	if (details_changed(stable_det, in_det)) {
+		dirty_block(inst, cmt, &pool, map.details_lba, RPDFS_DEV_BLOCK_TYPE_DETAILS, false,
+			    NULL, det_cblk, &cblk);
+		dblk = block_data_buf(cblk);
+		dblk->details[map.details_ind] = *in_det;
+		block_putp(&cblk);
+	}
 
-	/* make sure we have a dirty summary block for write-time updates */
-	dirty_block(inst, cmt, &pool, map.summary_lba, RPDFS_DEV_BLOCK_TYPE_SUMMARY, false,
-		    NULL, sum_cblk, &cblk);
-	block_putp(&cblk);
+	/* dirty and update the summary entry covering the details if it changed */
+	if (summary_changed(stable_det, in_det, &delta)) {
+		dirty_block(inst, cmt, &pool, map.summary_lba, RPDFS_DEV_BLOCK_TYPE_SUMMARY, false,
+			    NULL, sum_cblk, &cblk);
+		sblk = block_data_buf(cblk);
+		add_summary(&sblk->summaries[map.summary_ind], &delta);
+		block_putp(&cblk);
+	}
 
 	/* and dirty the stored block with a reference to the data page */
 	dirty_block(inst, cmt, &pool, map.lba, RPDFS_DEV_BLOCK_TYPE_STORED,

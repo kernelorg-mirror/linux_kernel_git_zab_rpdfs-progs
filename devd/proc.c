@@ -113,6 +113,8 @@ static void block_write_utask(void *data)
 	const u64 bnr = le64_to_cpu(bw->bnr);
 	int ret;
 
+	/* hard memset, memcmp used to compare later */
+	memset(&in_det, 0, sizeof(struct rpdfs_block_details));
 	in_det.alloc_ctr = bw->det.alloc_ctr;
 	in_det.write_ctr = bw->det.wcount;
 	in_det.place_lo = bw->det.place_lo;

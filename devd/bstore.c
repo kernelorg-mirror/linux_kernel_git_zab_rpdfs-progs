@@ -88,6 +88,8 @@ static struct bstore_instance {
 	u64 storage_lba;
 	u64 storage_blocks;
 
+	/* sum of alloc_count in committed summaries */
+	u64 total_allocated;
 	/* sum of nr_inodes in committed summaries */
 	u64 total_inodes;
 
@@ -110,8 +112,10 @@ static struct bstore_instance {
 	/* tracking summaries that changed during a commit */
 	unsigned int nr_changes;
 	struct summary_change {
-		u64 bnr;
-		struct rpdfs_dev_summary sum;
+		u64 bnr; /* fs bnr of the first block in the details block being summarized */
+		s8 allocated_delta;
+		s8 inodes_delta;
+		u8 alloc_count;
 	} changing_summaries[RPDFS_DEV_COMMIT_MAX_ENTRIES];
 
 } global_bstore_inst = {
@@ -681,12 +685,13 @@ static void register_changed_summary(struct bstore_instance *inst, u64 det_lba,
 	if (chg == NULL) {
 		chg = &inst->changing_summaries[inst->nr_changes++];
 		chg->bnr = map.bnr;
-		memset(chg, 0, sizeof(struct summary_change));
+		chg->alloc_count = old->alloc_count;
+		chg->allocated_delta = 0;
+		chg->inodes_delta = 0;
 	}
 
-	/* not all details are tracked the same, see apply_ */
-	chg->sum.nr_inodes += delta->nr_inodes;
-	chg->sum.alloc_count = old->alloc_count + delta->alloc_count;
+	chg->allocated_delta += delta->alloc_count;
+	chg->inodes_delta += delta->nr_inodes;
 
 	if ((chg == &inst->changing_summaries[inst->nr_changes - 1]) &&
 	    (inst->nr_changes > 1) && (chg->bnr < (chg - 1)->bnr))
@@ -705,8 +710,9 @@ static void apply_changed_summaries(struct bstore_instance *inst, int err)
 	for (i = 0; i < inst->nr_changes; i++) {
 		chg = &inst->changing_summaries[i];
 
-		set_free_count(chg->bnr, chg->sum.alloc_count);
-		inst->total_inodes += (s8)chg->sum.nr_inodes;
+		set_free_count(chg->bnr, chg->alloc_count + chg->allocated_delta);
+		inst->total_allocated += chg->allocated_delta;
+		inst->total_inodes += chg->inodes_delta;
 	}
 out:
 	inst->nr_changes = 0;
@@ -1482,6 +1488,7 @@ static int load_summary_block(struct bstore_instance *inst, u64 lba)
 			set_free_count(map.bnr + (i * RPDFS_DEV_DETAILS_PER_BLOCK * inst->nr_devds),
 				       sblk->summaries[i].alloc_count);
 
+		inst->total_allocated += sblk->summaries[i].alloc_count;
 		inst->total_inodes += sblk->summaries[i].nr_inodes;
 	}
 	block_put(cblk);

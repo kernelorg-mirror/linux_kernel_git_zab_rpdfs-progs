@@ -890,6 +890,11 @@ static void replay_oldest_commit(struct bstore_instance *inst)
 	int i;
 	int ret;
 
+	cmt = &inst->stable_cmt;
+	dtracef("bstore_replay_start","cmt old %llu cur %llu jrn h %llu t %llu",
+		le64_to_cpu(cmt->oldest_commit_ctr), le64_to_cpu(cmt->commit_ctr),
+		le64_to_cpu(cmt->journal_head_ctr), le64_to_cpu(cmt->journal_tail_ctr));
+
 	lba = commit_ctr_lba(inst, le64_to_cpu(inst->stable_cmt.oldest_commit_ctr));
 	ret = read_block_hdr(inst, lba, RPDFS_DEV_BLOCK_TYPE_COMMIT, &cmt_cblk);
 	if (ret < 0)
@@ -898,6 +903,9 @@ static void replay_oldest_commit(struct bstore_instance *inst)
 
 	/* record and issue read-ahead on first guess at blocks to replay */
 	for_each_commit_block(cmt, i, lba, journ_lba) {
+		dtracef("bstore_replay_reada","lba %llu jrn %llu sbl %llu drt %llu",
+			lba, journ_lba, stable_lba(inst, lba), dirty_lba(inst, lba));
+
 		/* don't check dirty when gathering before we block */
 		if (lba_in_journal(inst, journ_lba) && stable_lba(inst, lba) == journ_lba) {
 			inst->replay_blocks[replay_nr].e = i;
@@ -915,6 +923,9 @@ static void replay_oldest_commit(struct bstore_instance *inst)
 
 	/* verify blocks after waiting, can drop all blocks */
 	for_each_replay_block(inst, cmt, replay_nr, i, lba, journ_lba) {
+		dtracef("bstore_replay_verify","lba %llu jrn %llu sbl %llu drt %llu",
+			lba, journ_lba, stable_lba(inst, lba), dirty_lba(inst, lba));
+
 		/* drop block if journaled version is no longer current stable */
 		if (stable_lba(inst, lba) != journ_lba) {
 			block_invalidate(inst->replay_blocks[i].cblk);
@@ -944,6 +955,8 @@ static void replay_oldest_commit(struct bstore_instance *inst)
 
 	/* create dirty copies of the input journaled blocks at their final lbas */
 	for_each_replay_block(inst, cmt, replay_nr, i, lba, journ_lba) {
+		dtracef("bstore_replay_writing","lba %llu jrn %llu", lba, journ_lba);
+
 		/* prevent commits from dirtying our write in flight */
 		htable_insert(inst->replay_ht, lba, lba);
 

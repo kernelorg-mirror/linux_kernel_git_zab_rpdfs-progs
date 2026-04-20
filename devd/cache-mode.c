@@ -188,7 +188,7 @@ static void insert_client_block(struct cache_mode_instance *inst, struct client_
 {
 	rb_link_node(&clb->node, parent, link);
 	rb_insert_color(&clb->node, &inst->client_blocks_root);
-	list_add(&clb->lru_head, &inst->lru_list);
+	list_add_tail(&clb->lru_head, &inst->lru_list);
 	inst->nr_blocks++;
 
 	dtracef("cache_mode_insert", "clb %p "CLB_FMT, clb, CLB_ARG(clb));

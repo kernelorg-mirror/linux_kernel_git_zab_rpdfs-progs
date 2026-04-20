@@ -44,8 +44,7 @@ int rpdfs_msg_errno(u8 err)
 
 int rpdfs_msg_verify_header(struct rpdfs_msg_header *hdr)
 {
-	if ((hdr->ctl_size == 0 && hdr->data_size == 0) ||
-	    hdr->ctl_size > RPDFS_MSG_MAX_CTL_SIZE ||
+	if (hdr->ctl_size > RPDFS_MSG_MAX_CTL_SIZE ||
 	    le16_to_cpu(hdr->data_size) > RPDFS_MSG_MAX_DATA_SIZE ||
 	    hdr->type >= RPDFS_MSG__NR)
 		return -EINVAL;

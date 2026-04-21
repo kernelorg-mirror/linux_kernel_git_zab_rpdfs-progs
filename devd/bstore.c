@@ -1180,6 +1180,7 @@ int bstore_get_free_details(u64 bnr, unsigned long *bmap,
 	do {
 		ctr = stable_commit_ctr(inst);
 
+		block_putp(&cblk);
 		ret = read_block_hdr(inst, stable_lba(inst, map.details_lba),
 				     RPDFS_DEV_BLOCK_TYPE_DETAILS, &cblk);
 

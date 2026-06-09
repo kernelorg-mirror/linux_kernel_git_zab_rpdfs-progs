@@ -23,6 +23,11 @@ enum {
 	RPDFS_MSG_FREE_STRIPE_GRANT,
 	RPDFS_MSG_BLOCK_COUNTS_REQUEST,
 	RPDFS_MSG_BLOCK_COUNTS_RESULT,
+	RPDFS_MSG_RLOCK_REQUEST,
+	RPDFS_MSG_RLOCK_GRANT,
+	RPDFS_MSG_RLOCK_REVOKE,
+	RPDFS_MSG_RLOCK_CONFIRM,
+	RPDFS_MSG_RLOCK_RELEASE,
 	RPDFS_MSG__NR,
 };
 
@@ -31,6 +36,31 @@ enum {
 	RPDFS_MSG_ERR_EIO,
 	RPDFS_MSG_ERR_ENOMEM,
 	RPDFS_MSG_ERR__INVALID,
+};
+
+enum {
+
+	/*
+	 * 0 so that we can have natural if (mode) tests.
+	 */
+	RPDFS_RLOCK_MODE_NULL = 0,
+	/*
+	 * The client has rlock but not for read or write ops.  Is
+	 * compatible with all other modes.  (unused for now, but will
+	 * be used to track presence in client caches that prevent
+	 * deletion.)
+	 */
+	RPDFS_RLOCK_MODE_NONE,
+	/*
+	 * Shared read -- excludes write modes and blocks can be read.
+	 */
+	RPDFS_RLOCK_MODE_SH_RD,
+	/*
+	 * Exclusive write -- excludes write and read modes, blocks can be both read
+	 * and written.
+	 */
+	RPDFS_RLOCK_MODE_EX_WR,
+	RPDFS_RLOCK_MODE__INVALID,
 };
 
 /*
@@ -130,6 +160,17 @@ struct rpdfs_msg_cache_mode {
 	__le64 bnr;
 	__u8 mode;
 	__u8 _pad[7];
+};
+
+struct rpdfs_rlock_key {
+	__le64 k[2];
+};
+
+struct rpdfs_msg_rlock {
+	struct rpdfs_rlock_key key;
+	__u8 _pad[6];
+	__u8 mode;
+	__u8 flags;
 };
 
 /*

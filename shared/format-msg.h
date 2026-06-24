@@ -173,6 +173,7 @@ struct rpdfs_msg_rlock {
 	__u8 flags;
 };
 
+
 /*
  * The bnr is the first fs bnr in the stripe that should be found on the
  * receiving devd.  It is ignored (and must be 0) if _SEARCH is set

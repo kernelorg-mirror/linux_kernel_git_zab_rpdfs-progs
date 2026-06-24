@@ -306,6 +306,13 @@ void blk_set_data_page(struct blk_handle *hnd, struct page *data_page)
 	blk->hnd.data = page_address(blk->data_page);
 }
 
+struct page *blk_data_page(struct blk_handle *hnd)
+{
+	struct blk *blk = hnd_container(hnd);
+
+	return blk->data_page;
+}
+
 void blk_mark_dirty(struct blk_handle *hnd)
 {
 	struct blk_instance *inst = &global_blk_inst;

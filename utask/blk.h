@@ -74,6 +74,7 @@ void blk_close_ticket(struct blk_ticket *tkt);
 struct blk_handle *blk_get(struct rpdfs_block_key *key, bgf_t bgf, struct blk_ticket *tkt);
 void blk_change_key(struct blk_handle *hnd, struct rpdfs_block_key *key);
 void blk_set_data_page(struct blk_handle *hnd, struct page *data_page);
+struct page *blk_data_page(struct blk_handle *hnd);
 void blk_mark_dirty(struct blk_handle *hnd);
 bool blk_can_modify(struct blk_handle *hnd);
 void blk_schedule_write_dirty(void);

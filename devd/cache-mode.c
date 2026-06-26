@@ -361,8 +361,8 @@ static int send_read_result(struct cache_mode_instance *inst, struct client_bloc
 	lru_accessed(inst, clb);
 
 	memset_zero_sizeof(rr);
-	rr.bnr = cpu_to_le64(clb->bnr);
-	rr.grant_mode = mode;
+//	rr.bnr = cpu_to_le64(clb->bnr);
+//	rr.grant_mode = mode;
 	rr.err = rpdfs_msg_err(read_ret);
 
 	hdr.ctl_size = sizeof(rr);

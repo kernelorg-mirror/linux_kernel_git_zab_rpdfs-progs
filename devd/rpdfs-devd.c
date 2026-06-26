@@ -25,14 +25,12 @@
 #include "shared/options.h"
 #include "shared/parse.h"
 
-#include "utask/block.h"
 #include "utask/net.h"
 #include "utask/sigcb.h"
 #include "utask/utask.h"
 
-#include "devd/bstore.h"
-#include "devd/cache-mode.h"
-#include "devd/free-map.h"
+#include "devd/rlock.h"
+#include "devd/lstore.h"
 #include "devd/proc.h"
 
 struct devd_options {
@@ -130,20 +128,17 @@ static void main_utask(void *data)
 	if (ret < 0)
 		goto out;
 
-	ret = block_init(dm->opts.dev_path, BLOCK_QUEUE_DEPTH) ?:
-	      bstore_init(dm->opts.nr_devds, dm->opts.this_devd_pos) ?:
+	ret = lstore_init(dm->opts.dev_path) ?:
 	      net_init() ?:
-	      cache_mode_init() ?:
+	      rlock_init() ?:
 	      net_register_recv(proc_recv) ?:
 	      net_listen(&dm->opts.listen_addr) ?:
 	      ({ sd_notify(0, "READY=1") ; 0; }) ?:
 	      utask_wait_event_task(utask_am_canceled());
 
-	cache_mode_exit();
+	rlock_exit();
 	net_exit();
-	bstore_exit();
-	block_exit();
-	free_map_exit();
+	lstore_exit();
 	sigcb_free(sigcb);
 out:
 	utask_shutdown();

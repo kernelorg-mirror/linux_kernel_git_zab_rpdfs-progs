@@ -118,13 +118,8 @@ static inline u8 rpdfs_block_key_type(struct rpdfs_block_key *key)
 }
 
 struct rpdfs_msg_block_read {
-	__le64 bnr;
-	__le64 flags;
-	__u8 request_mode;
-	__u8 _pad[7];
+	struct rpdfs_block_key key;
 };
-
-#define RPDFS_MSG_BLOCK_READ_FLAG_DATA	(1 << 0)
 
 /*
  * A block's place is a 128bit value that uniquely identifies the
@@ -158,27 +153,25 @@ struct rpdfs_msg_block_details {
 	__le64 wcount;
 	__le64 place_lo;
 	__le64 place_hi;
+	__le64 crc;
 };
 
 struct rpdfs_msg_block_read_result {
-	__le64 bnr;
+	struct rpdfs_block_key key;
 	struct rpdfs_msg_block_details det;
-	__u8 grant_mode;
+	__u8 _pad[7];
 	__u8 err;
-	__u8 _pad[6];
 };
 
 struct rpdfs_msg_block_write {
-	__le64 bnr;
+	struct rpdfs_block_key key;
 	struct rpdfs_msg_block_details det;
-	__u8 confirm_mode;
-	__u8 _pad[7];
 };
 
 struct rpdfs_msg_block_write_result {
-	__le64 bnr;
-	__u8 err;
+	struct rpdfs_block_key key;
 	__u8 _pad[7];
+	__u8 err;
 };
 
 struct rpdfs_msg_cache_mode {

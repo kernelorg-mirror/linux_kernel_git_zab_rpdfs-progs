@@ -17,7 +17,6 @@
 #include <systemd/sd-daemon.h>
 
 #include "shared/dtracef.h"
-#include "shared/format-dev.h"
 #include "shared/lk/err.h"
 #include "shared/lk/kernel.h"
 #include "shared/log.h"

@@ -23,15 +23,15 @@
 
 #include "shared/devfd.h"
 #include "shared/format-block.h"
-#include "shared/format-dev.h"
+#include "shared/format-dev-log.h"
 #include "shared/log.h"
 
 #include "cli/cli.h"
 
 static double units_value(double x)
 {
-	while (x >= 1000)
-		x /= 1000;
+	while (x >= 1024)
+		x /= 1024;
 	return x;
 }
 
@@ -43,13 +43,16 @@ static char *units_str(double x)
 	};
 	char **u = &unit_strings[0];
 
-	while (x >= 1000 && *u) {
-		x/= 1000;
+	while (x >= 1024 && *u) {
+		x/= 1024;
 		u++;
 	}
 
 	return *u ?: "¯\\_(ツ)_/¯";
 }
+
+#define SZ_F		"%6.2f %s"
+#define SZ_A(sz)	units_value(sz), units_str(sz)
 
 #define BS_F		"%12zu %3.0f%s blocks, %6.2f %s"
 #define BS_A(b, bs)	(size_t)(b), units_value(bs), units_str(bs), units_value((b) * (bs)), \
@@ -58,92 +61,46 @@ static char *units_str(double x)
 #define PCT_F		"%6.2f%%"
 #define PCT_A(a, b)	((double)(a) * 100 / (b))
 
-static void change_flags(int fd, int and, int or)
+static int write_block_and_sync(int fd, void *buf, u64 offset)
 {
-	int fl;
-
-	fl = fcntl(fd, F_GETFL);
-	if (fl >= 0)
-		fcntl(fd, F_SETFL, (fl & and) | or);
-}
-
-/*
- * We saw some nvme devices that didn't implement the discard_zeros
- * quirk and then had tiny limits on write_zeros so the kernel's bldev
- * zeroing (falloc or BLK ioctl) took orders of magnitude longer than
- * just writing zeros :/.
- */
-#define ZERO_SIZE (32 * 1024 * 1024)
-static int write_zeros(int orig_fd, off_t start, size_t len)
-{
-	char *buf = NULL;
-	bool have_direct;
-	int fd = -1;
-	size_t part;
+	struct rpdfs_log_block_header *hdr = buf;
+	u64 crc;
 	int ret;
 
-	buf = calloc(1, ZERO_SIZE);
-	if (!buf) {
-		ret = -errno;
+	hdr->dev_addr = cpu_to_le64(offset);
+
+	hdr->crc = 0;
+	crc = crc64_nvme(0, hdr, RPDFS_BLOCK_SIZE);
+	hdr->crc = cpu_to_le64(crc);
+
+	ret = pwrite(fd, hdr, RPDFS_BLOCK_SIZE, offset);
+	if (ret != RPDFS_BLOCK_SIZE) {
+		if (ret >= 0)
+			ret = -EIO;
+		else
+			ret = -errno;
+		printf("write error: "ENOF"\n", ENOA(-ret));
 		goto out;
 	}
 
-	fd = dup(orig_fd);
-	if (fd < 0) {
+	ret = fdatasync(fd);
+	if (ret != 0) {
 		ret = -errno;
+		printf("fdatasync error: "ENOF"\n", ENOA(-ret));
 		goto out;
 	}
 
-	change_flags(fd, ~0, O_DIRECT);
-	ret = fcntl(fd, F_GETFL);
-	have_direct = ret >= 0 && (ret & O_DIRECT);
-
-	while (len > 0) {
-		part = min(ZERO_SIZE, len);
-		ret = pwrite(fd, buf, part, start);
-		if (ret != part) {
-			if (have_direct && (errno == EOPNOTSUPP || errno == EINVAL)) {
-				change_flags(fd, ~O_DIRECT, 0);
-				have_direct = false;
-				continue;
-			}
-			if (ret >= 0)
-				ret = -EIO;
-			else
-				ret = -errno;
-			goto out;
-		}
-		if (!have_direct)
-			posix_fadvise(fd, start, part, POSIX_FADV_DONTNEED);
-		start += part;
-		len -= part;
-	}
-
+	ret = 0;
 out:
-	if (fd >= 0)
-		close(fd);
-	free(buf);
 	return ret;
 }
 
 static int format_device_func(int argc, char **argv)
 {
-	struct rpdfs_dev_commit_block *cmt = NULL;
-	char uuid_str[37];
-	uuid_t uuid;
+	struct rpdfs_log_commit_block *cmt = NULL;
+	char uuid_str[UUID_STR_LEN];
 	u64 size;
-	u64 total;
-	u64 commit;
-	u64 journal;
-	u64 summary;
-	u64 details;
-	u64 internal;
-	u64 store;
-	u64 crc;
-	u64 d;
-	u64 s;
 	int fd = -1;
-	int off;
 	int ret;
 
 	/*
@@ -152,6 +109,13 @@ static int format_device_func(int argc, char **argv)
 	if (argc != 2) {
 		printf("incorrect argc %d\n", argc);
 		ret = -EINVAL;
+		goto out;
+	}
+
+	cmt = calloc(1, RPDFS_BLOCK_SIZE);
+	if (!cmt) {
+		ret = -errno;
+		printf("error allocating block buffer: "ENOF"\n", ENOA(-ret));
 		goto out;
 	}
 
@@ -168,96 +132,25 @@ static int format_device_func(int argc, char **argv)
 		goto out;
 	}
 
-	total = size / RPDFS_BLOCK_SIZE;
-	journal = total >> 10;
-	commit = journal >> 2;
-	journal -= commit;
-
-	if (commit < RPDFS_DEV_MIN_JC_BLOCKS) {
-		printf("device with %llu 4KiB blocks results in %llu commit blocks.\n"
-		       "%u commit blocks are required, which is met by a device with %llu blocks\n",
-		       total, commit, RPDFS_DEV_MIN_JC_BLOCKS,
-		       ((u64)RPDFS_DEV_MIN_JC_BLOCKS) << 12);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	summary = 1;
-	details = 1;
-	store = total;
-	do {
-		d = details;
-		s = summary;
-		/*
-		 * We clamp the available fs storage blocks to be a
-		 * whole multiple of the number of blocks described by
-		 * full summary and details blocks.  We don't need users
-		 * of the summary and details blocks to test block
-		 * bounds or for entries that are recorded as unused.
-		 */
-		store = rounddown(total - commit - journal - summary - details,
-				  RPDFS_DEV_SUMMARIES_PER_BLOCK * RPDFS_DEV_DETAILS_PER_BLOCK);
-		details = DIV_ROUND_UP(store, RPDFS_DEV_DETAILS_PER_BLOCK);
-		summary = DIV_ROUND_UP(details, RPDFS_DEV_SUMMARIES_PER_BLOCK);
-	} while (d != details || s != summary);
-
 	/* attempt to discard, fine if not supported */
 	devfd_discard(fd, 0, size);
 
-	/* initialized metadata must be zero, however */
-	ret = write_zeros(fd, 0, (total - store) * RPDFS_BLOCK_SIZE);
+	uuid_generate(cmt->hdr.uuid);
+	cmt->hdr.type = RPDFS_LOG_BLOCK_TYPE_COMMIT;
+	cmt->commit_seq = cpu_to_le64(1);
+
+	ret = write_block_and_sync(fd, cmt, 0);
 	if (ret < 0) {
-		printf("zeroing device metadata blocks: '%s': "ENOF"\n", argv[1], ENOA(-ret));
+		printf("error writing root block '%s': "ENOF"\n", argv[1], ENOA(-ret));
 		goto out;
 	}
 
-	cmt = calloc(1, RPDFS_BLOCK_SIZE);
-	cmt->hdr.type = RPDFS_DEV_BLOCK_TYPE_COMMIT;
-	cmt->layout.commit_blocks = cpu_to_le64(commit);
-	cmt->layout.journal_blocks = cpu_to_le64(journal);
-	cmt->layout.summary_blocks = cpu_to_le64(summary);
-	cmt->layout.details_blocks = cpu_to_le64(details);
-	cmt->layout.storage_blocks = cpu_to_le64(store);
+	uuid_unparse(cmt->hdr.uuid, uuid_str);
 
-	uuid_generate_random(uuid);
-	uuid_unparse(uuid, uuid_str);
-	BUILD_BUG_ON(RPDFS_UUID_SIZE != sizeof(uuid_t));
-	memcpy(&cmt->hdr.dev_uuid, &uuid, RPDFS_UUID_SIZE);
-
-	off = sizeof_field(struct rpdfs_dev_block_header, crc);
-	crc = crc64_nvme(0, (void *)cmt + off, RPDFS_BLOCK_SIZE - off);
-	cmt->hdr.crc = cpu_to_le64(crc);
-
-	ret = pwrite(fd, cmt, RPDFS_BLOCK_SIZE, 0);
-	if (ret != RPDFS_BLOCK_SIZE) {
-		if (ret >= 0)
-			ret = -EIO;
-		else
-			ret = -errno;
-		printf("write error: '%s': "ENOF"\n", argv[1], ENOA(-ret));
-		goto out;
-	}
-
-	ret = fdatasync(fd);
-	if (ret != 0) {
-		ret = -errno;
-		printf("fdatasync error: '%s': "ENOF"\n", argv[1], ENOA(-ret));
-		goto out;
-	}
-
-	internal = commit + journal + summary + details;
 	printf("Formatted rpdfs device:\n"
 	       "  uuid:                 %s\n"
-	       "  device size:          "BS_F"\n"
-	       "  internal metadata:    "BS_F" ("PCT_F")\n"
-	       "  usable fs blocks:     "BS_F" ("PCT_F")\n"
-	       "  unused end of device: "BS_F" ("PCT_F")\n",
-		uuid_str,
-		BS_A(total, RPDFS_BLOCK_SIZE),
-		BS_A(internal, RPDFS_BLOCK_SIZE), PCT_A(internal, total),
-	        BS_A(store, RPDFS_BLOCK_SIZE), PCT_A(store, total),
-		BS_A(total - (internal + store), RPDFS_BLOCK_SIZE),
-			PCT_A(total - (internal + store), total));
+	       "  device size:          "SZ_F"\n",
+	       uuid_str, SZ_A(size));
 
 	ret = 0;
 out:

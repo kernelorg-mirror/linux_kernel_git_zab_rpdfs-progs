@@ -4,6 +4,7 @@
 
 #include <linux/types.h>
 
+#include "shared/lk/byteorder.h"
 #include "shared/lk/compiler_attributes.h"
 #include "shared/lk/math.h"
 #include "shared/lk/types.h"
@@ -91,6 +92,30 @@ struct rpdfs_msg_header {
 
 #define RPDFS_MSG_MAX_CTL_SIZE	255
 #define RPDFS_MSG_MAX_DATA_SIZE 4096
+
+/*
+ * k[0,1] are the inode_nr.  k[2] is a packing of a u8 key and u56
+ * index.
+ */
+struct rpdfs_block_key {
+	__le64 k[3];
+};
+
+/* the high byte of k[2] is the type */
+#define RPDFS_BLOCK_KEY_TYPE__SHIFT	(64 - 8)
+/* the low bits of k[2] is the index for the type */
+#define RPDFS_BLOCK_KEY_INDEX__MASK	((1ULL << RPDFS_BLOCK_KEY_TYPE__SHIFT) - 1)
+
+#define RPDFS_BLOCK_KEY_TYPE_INODE	0
+#define RPDFS_BLOCK_KEY_TYPE_XATTR	1
+#define RPDFS_BLOCK_KEY_TYPE_DIRENT	2
+#define RPDFS_BLOCK_KEY_TYPE_DATA	3
+#define RPDFS_BLOCK_KEY_TYPE__INVALID	4
+
+static inline u8 rpdfs_block_key_type(struct rpdfs_block_key *key)
+{
+	return le64_to_cpu(key->k[2]) >> RPDFS_BLOCK_KEY_TYPE__SHIFT;
+}
 
 struct rpdfs_msg_block_read {
 	__le64 bnr;

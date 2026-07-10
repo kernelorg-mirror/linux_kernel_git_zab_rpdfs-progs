@@ -13,6 +13,7 @@
 #include "shared/dtracef.h"
 #include "shared/format-block.h"
 #include "shared/format-dev-log.h"
+#include "shared/log.h"
 #include "shared/string_wrappers.h"
 #include "utask/blk.h"
 #include "utask/utask.h"
@@ -975,6 +976,7 @@ static int load_stable_commit(struct lstore_instance *inst, u64 size)
 	hnd = lstore_read_block(addr, RPDFS_LOG_BLOCK_TYPE_COMMIT, 0, NULL);
 	if (IS_ERR(hnd)) {
 		ret = PTR_ERR(hnd);
+		log_err("failed to read initial commit block: "ENOF, ENOA(-ret));
 		goto out;
 	}
 

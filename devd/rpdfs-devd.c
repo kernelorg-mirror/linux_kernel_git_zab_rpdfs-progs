@@ -35,6 +35,7 @@
 struct devd_options {
 	char *dev_path;
 	struct sockaddr_in listen_addr;
+	char *log_path;
 	char *trace_path;
 	u64 nr_devds;
 	u64 this_devd_pos;
@@ -45,6 +46,11 @@ static struct option_more devd_moreopts[] = {
 	  .arg = "path",
 	  .desc = "path to block device",
 	  .required = 1, },
+
+	{ .longopt = { "log_path", required_argument, NULL, 'L' },
+	  .arg = "file_path",
+	  .desc = "write error and info log messages to this file",
+	},
 
 	{ .longopt = { "listen_addr", required_argument, NULL, 'l' },
 	  .arg = "addr:port",
@@ -75,6 +81,9 @@ static int parse_devd_opt(int c, char *str, void *arg)
 	switch(c) {
 	case 'd':
 		ret = strdup_nerr(&opts->dev_path, str);
+		break;
+	case 'L':
+		ret = strdup_nerr(&opts->log_path, str);
 		break;
 	case 'l':
 		ret = parse_ipv4_addr_port(&opts->listen_addr, str);
@@ -138,6 +147,7 @@ static void main_utask(void *data)
 	rlock_exit();
 	net_exit();
 	lstore_exit();
+	log_exit();
 	sigcb_free(sigcb);
 out:
 	utask_shutdown();
@@ -166,6 +176,7 @@ int main(int argc, char **argv)
 	}
 
 	ret = (dm.opts.trace_path ? dtracef_init(dm.opts.trace_path) : 0) ?:
+	      (dm.opts.log_path ? log_init(dm.opts.log_path) : 0) ?:
 	      utask_init();
 	if (ret < 0)
 		goto out;

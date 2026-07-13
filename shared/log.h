@@ -8,6 +8,7 @@
 #include <string.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include "shared/format-msg.h"
 
 #define ENOF		"%s (errno %d)"
 #define ENOA(eno)	strerror(eno), eno
@@ -19,6 +20,11 @@
 	(ntohl((addr)->sin_addr.s_addr) >> 8) & 0xff,	\
 	ntohl((addr)->sin_addr.s_addr) & 0xff,		\
 	ntohs((addr)->sin_port)
+
+#define RBKF		"%llx.%llx.%x.%llx"
+#define RBKA(bk)	le64_to_cpu((bk)->k[0]), le64_to_cpu((bk)->k[1]), \
+			(u8)(le64_to_cpu((bk)->k[2]) >> RPDFS_BLOCK_KEY_TYPE__SHIFT), \
+			(le64_to_cpu((bk)->k[2]) & RPDFS_BLOCK_KEY_INDEX__MASK)
 
 #define log(fmt, args...) \
 	dprintf(STDOUT_FILENO, fmt"\n", ##args)

@@ -16,6 +16,7 @@
 #include <netinet/tcp.h>
 #include <systemd/sd-daemon.h>
 
+#include "shared/crash.h"
 #include "shared/dtracef.h"
 #include "shared/lk/err.h"
 #include "shared/lk/kernel.h"
@@ -161,7 +162,8 @@ int main(int argc, char **argv)
 	int ret;
 
 	/* setup the most basic subsystems */
-	ret = getopt_long_more(argc, argv, devd_moreopts, ARRAY_SIZE(devd_moreopts),
+	ret = crash_init() ?:
+              getopt_long_more(argc, argv, devd_moreopts, ARRAY_SIZE(devd_moreopts),
 			       parse_devd_opt, &dm.opts);
 	if (ret < 0)
 		goto out;

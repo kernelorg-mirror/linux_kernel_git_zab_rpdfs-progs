@@ -61,9 +61,11 @@ struct rlock_lists {
  * Tracks the modes in flight to a specific client.
  */
 struct client_rlock {
-	struct rpdfs_rlock_key key;
+	struct client_hash_key {
+		struct rpdfs_rlock_key key;
+		u64 client_id;
+	} hk;
 	struct list_head head;
-	u64 client_id;
 	u8 granted;
 	u8 revoked;
 };
@@ -72,7 +74,7 @@ struct client_rlock {
 #define CL_KEY_ARG(key)		le64_to_cpu((key)->k[0]), le64_to_cpu((key)->k[1])
 
 #define CL_FMT			"key "CL_KEY_FMT" client_id %llu gr %u rvk %u"
-#define CL_ARG(lists, cl)	CL_KEY_ARG(&(lists)->key), (cl)->client_id, (cl)->granted, \
+#define CL_ARG(lists, cl)	CL_KEY_ARG(&(lists)->key), (cl)->hk.client_id, (cl)->granted, \
 				(cl)->revoked
 
 #define REQ_FMT			"key "CL_KEY_FMT" client_id %llu mode %u"
@@ -148,20 +150,25 @@ static struct client_rlock *get_client_rlock(struct rlock_instance *inst,
 					     struct rpdfs_rlock_key *key, bool alloc)
 {
 	struct client_rlock *cl = NULL;
+	struct client_hash_key hk = {
+		.key = *key,
+		.client_id = client_id,
+	};
 
 	if (WARN_ON_ONCE(alloc && !lists))
 		return NULL;
 
-	cl = htable_lookup(inst->client_ht, key);
+	cl = htable_lookup(inst->client_ht, &hk);
 	if (!cl && alloc) {
 		cl = malloc(sizeof(struct client_rlock));
 		if (cl) {
-			/* NONE/NULL sorted at the tail of the granted list */
-			list_add_tail(&cl->head, &lists->granted);
-			cl->client_id = client_id;
+			cl->hk.key = *key;
+			cl->hk.client_id = client_id;
 			cl->granted = RPDFS_RLOCK_MODE_NULL;
 			cl->revoked = RPDFS_RLOCK_MODE_NULL;
 
+			/* NONE/NULL sorted at the tail of the granted list */
+			list_add_tail(&cl->head, &lists->granted);
 			htable_insert(inst->client_ht, cl);
 		}
 	}
@@ -249,7 +256,7 @@ static bool try_free_client_rlock(struct rlock_instance *inst, struct rlock_list
 				  struct client_rlock *cl)
 {
 	if (cl->granted <= RPDFS_RLOCK_MODE_NONE && cl->revoked <= RPDFS_RLOCK_MODE_NONE) {
-		htable_delete(inst->client_ht, &cl->key);
+		htable_delete(inst->client_ht, &cl->hk);
 		list_del_init(&cl->head);
 		free(cl);
 		return true;
@@ -301,7 +308,7 @@ static int send_rlock(struct rlock_instance *inst, struct rlock_lists *lists,
 	hdr.ctl_size = sizeof(dl);
 	hdr.type = type;
 
-	client_id_to_sockaddr(&addr, cl->client_id);
+	client_id_to_sockaddr(&addr, cl->hk.client_id);
 	return net_send(&addr, &hdr, &dl, NULL);
 }
 
@@ -330,7 +337,7 @@ static void process_requests(struct rlock_instance *inst, struct rlock_lists *li
 			dtracef("rlock_process_client", CL_FMT, CL_ARG(lists, cl));
 
 			/* a client's mode can't conflict with itself */
-			if (cl->client_id == req->client_id)
+			if (cl->hk.client_id == req->client_id)
 				continue;
 
 			/* once we're compatible all remaining sorted granted will be as well */
@@ -545,8 +552,8 @@ int rlock_init(void)
 
 	inst->lists_ht = htable_alloc(offsetof(struct rlock_lists, key),
 				      sizeof(struct rpdfs_block_key));
-	inst->client_ht = htable_alloc(offsetof(struct client_rlock, key),
-				       sizeof(struct rpdfs_block_key));
+	inst->client_ht = htable_alloc(offsetof(struct client_rlock, hk),
+				       sizeof(struct client_hash_key));
 	if (!inst->lists_ht || !inst->client_ht) {
 		htable_destroy(inst->lists_ht, free_htable_obj, NULL);
 		htable_destroy(inst->client_ht, free_htable_obj, NULL);

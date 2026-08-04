@@ -551,7 +551,7 @@ int rlock_init(void)
 	int ret;
 
 	inst->lists_ht = htable_alloc(offsetof(struct rlock_lists, key),
-				      sizeof(struct rpdfs_block_key));
+				      sizeof(struct rpdfs_rlock_key));
 	inst->client_ht = htable_alloc(offsetof(struct client_rlock, hk),
 				       sizeof(struct client_hash_key));
 	if (!inst->lists_ht || !inst->client_ht) {

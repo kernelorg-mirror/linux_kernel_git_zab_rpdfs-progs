@@ -712,21 +712,7 @@ struct blk_handle *lstore_read(struct rpdfs_block_key *key, struct rpdfs_msg_blo
 		goto out;
 	}
 
-	/* move cached contents from phys dev_addr to logical block key on use to avoid btree */
-	if (is_dev_addr_key(&hnd->key)) {
-		/* can trust allocated size as long as this is the only user of ->private */
-		if (!hnd->private) {
-			hnd->private = malloc(sizeof(struct rpdfs_msg_block_details));
-			if (!hnd->private) {
-				ret = -ENOMEM;
-				goto out;
-			}
-		}
-		memcpy(hnd->private, &ldet.det, sizeof(struct rpdfs_msg_block_details));
-		blk_change_key(hnd, key);
-	}
-
-	memcpy(det, hnd->private, sizeof(struct rpdfs_msg_block_details));
+	memcpy(det, &ldet.det, sizeof(struct rpdfs_msg_block_details));
 	ret = 0;
 out:
 	dtracef("lstore_read", "ret %d", ret);

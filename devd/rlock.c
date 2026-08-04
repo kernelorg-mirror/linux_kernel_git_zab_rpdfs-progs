@@ -340,8 +340,8 @@ static void process_requests(struct rlock_instance *inst, struct rlock_lists *li
 			if (cl->hk.client_id == req->client_id)
 				continue;
 
-			/* once we're compatible all remaining sorted granted will be as well */
-			if (compatible_modes(cl->granted, compat))
+			/* granted sorting ensures all remaining must also be compatible */
+			if (compatible_modes(cl->granted, req->mode))
 				break;
 
 			saw_incompat = true;
